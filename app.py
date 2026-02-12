@@ -66,6 +66,46 @@ COLOR_RIESGO_MEDIO = "#D68910"
 COLOR_RIESGO_BAJO = "#1E8449"
 
 # -----------------------------------------------------------------------------
+# TELEGRAM
+# -----------------------------------------------------------------------------
+def _telegram_token():
+    """
+    Obtiene el token del bot desde env o secrets.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    try:
+        if not token and "telegram_bot_token" in st.secrets:
+            token = st.secrets.get("telegram_bot_token")
+    except Exception:
+        pass
+    return token
+
+
+def send_telegram_message(text: str, chat_id: str = None, phone: str = None):
+    """
+    Envía un mensaje de Telegram si se dispone de token y destinatario.
+    Nota: Telegram exige que el usuario haya iniciado previamente el bot;
+    con solo el teléfono puede fallar. Devolverá (ok, error_msg).
+    """
+    token = _telegram_token()
+    if not token:
+        return False, "Token de Telegram no configurado"
+
+    destino = chat_id or phone
+    if not destino:
+        return False, "Sin destinatario"
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": destino, "text": text}
+    try:
+        resp = requests.post(url, data=payload, timeout=8)
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return True, ""
+        return False, resp.text
+    except Exception as e:
+        return False, str(e)
+
+# -----------------------------------------------------------------------------
 # ESTILOS CSS
 # -----------------------------------------------------------------------------
 CUSTOM_CSS = """
@@ -897,7 +937,8 @@ COLUMNAS_WEB_FIJAS = [
     'ID_RESERVA', 'LLEGADA', 'SALIDA', 'NOCHES', 'PAX', 'VALOR_RESERVA',
     'NOMBRE_HABITACION', 'CANAL', 'MERCADO', 'AGENCIA', 'NOMBRE_HOTEL_REAL',
     'COMPLEJO_REAL', 'PROBABILIDAD_CANCELACION', 'HOTEL_COMPLEJO',
-    'CLIENTE_NOMBRE', 'CLIENTE_EMAIL', 'SEGMENTO', 'FIDELIDAD', 'FUENTE_NEGOCIO',
+    'CLIENTE_NOMBRE', 'CLIENTE_EMAIL', 'CLIENTE_TELEFONO',
+    'SEGMENTO', 'FIDELIDAD', 'FUENTE_NEGOCIO',
     'FECHA_CREACION', 'ESTADO'
 ]
 
@@ -935,6 +976,7 @@ def guardar_reserva_csv(reserva: dict) -> bool:
             # Campos NUEVOS ricos (Solo en archivo web)
             'CLIENTE_NOMBRE': reserva.get('nombre', ''),
             'CLIENTE_EMAIL': reserva.get('email', ''),
+            'CLIENTE_TELEFONO': reserva.get('telefono', ''),
             'SEGMENTO': reserva.get('segmento', 'BAR'),
             'FIDELIDAD': reserva.get('fidelidad', 'None'),
             'FUENTE_NEGOCIO': reserva.get('fuente_negocio', 'DIRECT SALES'),
@@ -1620,6 +1662,7 @@ margin-bottom: 15px;
             nombre = st.text_input("Nombre completo *", key="w_nombre")
             email = st.text_input("Email *", key="w_email")
             telefono = st.text_input("Teléfono", key="w_telefono")
+            telegram_optin = st.checkbox("Quiero recibir confirmación por Telegram", key="w_tel_optin")
             
         with col_datos2:
             pais_opciones = ["ESPAÑA", "USA", "CANADA", "UK", "FRANCIA", "ALEMANIA", "ITALIA", "MEXICO", "BRASIL", "ARGENTINA", "OTRO"]
@@ -1797,6 +1840,7 @@ margin-bottom: 15px;
             'nombre': nombre,
             'email': email,
             'telefono': telefono,
+            'telegram_optin': telegram_optin,
             'pais': pais,
             'destino': destino,
             'hotel': hotel,
@@ -1822,6 +1866,23 @@ margin-bottom: 15px;
         
         # Guardar en archivo CSV persistente
         guardar_reserva_csv(reserva)
+
+        # Telegram (opt-in)
+        if telegram_optin and telefono:
+            msg_tel = (
+                f"Reserva confirmada 🎉\n"
+                f"Código: {id_reserva}\n"
+                f"Hotel: {hotel}\n"
+                f"Habitación: {habitacion}\n"
+                f"Llegada: {llegada.strftime('%d/%m/%Y')} · {noches} noches\n"
+                f"Huéspedes: {pax} (Adt {adultos}, Ni {ninos})\n"
+                f"Importe: {valor:,.2f} EUR"
+            )
+            ok_tel, err_tel = send_telegram_message(msg_tel, phone=f"+34{telefono.strip()}" if not str(telefono).startswith("+") else telefono)
+            if ok_tel:
+                st.success("Confirmación enviada por Telegram.")
+            else:
+                st.info("No se pudo enviar por Telegram (el bot debe iniciarse antes en Telegram).")
         
         # Mostramos confirmacion
         st.markdown(f"""

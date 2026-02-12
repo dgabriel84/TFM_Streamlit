@@ -22,6 +22,7 @@ import io
 import base64
 import html
 import unicodedata
+import requests
 
 # -----------------------------------------------------------------------------
 # CONFIGURACION DE RUTAS
@@ -61,6 +62,36 @@ COLOR_BLANCO = "#FFFFFF"
 COLOR_RIESGO_ALTO = "#C0392B"
 COLOR_RIESGO_MEDIO = "#D68910"
 COLOR_RIESGO_BAJO = "#1E8449"
+
+# -----------------------------------------------------------------------------
+# TELEGRAM
+# -----------------------------------------------------------------------------
+def _telegram_token():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    try:
+        if not token and "telegram_bot_token" in st.secrets:
+            token = st.secrets.get("telegram_bot_token")
+    except Exception:
+        pass
+    return token
+
+
+def send_telegram_message(text: str, chat_id: str = None, phone: str = None):
+    token = _telegram_token()
+    if not token:
+        return False, "Token de Telegram no configurado"
+    destino = chat_id or phone
+    if not destino:
+        return False, "Sin destinatario"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": destino, "text": text}
+    try:
+        resp = requests.post(url, data=payload, timeout=8)
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return True, ""
+        return False, resp.text
+    except Exception as e:
+        return False, str(e)
 
 # -----------------------------------------------------------------------------
 # ESTILOS CSS
@@ -703,6 +734,7 @@ def _buscar_reserva_por_id_local(id_reserva):
         "cliente_nombre": str(nombre),
         "email": str(email),
         "cliente_email": str(email),
+        "telefono": row.get("CLIENTE_TELEFONO", ""),
         "hotel": row.get("NOMBRE_HOTEL_REAL", row.get("hotel", "Hotel")),
         "habitacion": row.get("NOMBRE_HABITACION", row.get("habitacion", "Estándar")),
         "llegada": llegada_fmt,
@@ -1971,6 +2003,24 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                                     )
                                 else:
                                     st.success("Oferta enviada al cliente.")
+
+                                # Telegram (si hay telefono)
+                                tel_dest = reserva.get("telefono") or reserva.get("raw_data", {}).get("CLIENTE_TELEFONO", "")
+                                if tel_dest:
+                                    msg = (
+                                        f"Oferta de retención enviada ✅\n"
+                                        f"Reserva: {r_id}\n"
+                                        f"Cliente: {r_nombre}\n"
+                                        f"Oferta: {oferta_texto}"
+                                    )
+                                    telefono_fmt = str(tel_dest).strip()
+                                    if not telefono_fmt.startswith("+"):
+                                        telefono_fmt = f"+34{telefono_fmt}"
+                                    ok_tel, _ = send_telegram_message(msg, phone=telefono_fmt)
+                                    if ok_tel:
+                                        st.info("Notificación enviada por Telegram.")
+                                    else:
+                                        st.info("Telegram no enviado (el cliente debe iniciar el bot previamente).")
                     else:
                         st.success("Riesgo bajo detectado: no se recomienda aplicar oferta de retención.")
                 
