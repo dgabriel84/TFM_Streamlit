@@ -2056,6 +2056,7 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
     if selected_tab == "SOBRE NOSOTROS":
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         miembros_dir = os.path.join(base_dir, "media", "Miembros")
+        qr_path = os.path.join(base_dir, "media", "general", "qr_tfm.png")
 
         def _render_persona(nombre, enlace, img_file, rol=None):
             col_img, col_txt = st.columns([1, 6])
@@ -2073,25 +2074,35 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                     st.caption(rol)
                 st.markdown(f"[{nombre}]({enlace})")
 
-        st.subheader("Máster en Data Science")
-        st.markdown("**Profesor Tutor:**")
-        _render_persona(
-            "Jean Gustavo Cueva",
-            "https://www.linkedin.com/in/jean-gustavo-cueva-cajas-69074b90/",
-            "Gustavo.png",
-            rol="Profesor Tutor",
-        )
+        col_left, col_right = st.columns([2, 1])
 
-        st.markdown("---")
-        st.markdown("**Integrantes del Equipo:**")
-        _render_persona("Alejandro Batres", "https://www.linkedin.com/in/alejandro-batres-3595909b/", "Alex.png")
-        _render_persona("David Ostiz", "https://www.linkedin.com/in/david-ostiz/", "David.png")
-        _render_persona("Francisco Javier Barrionuevo", "https://www.linkedin.com/in/franciscobarrionuevo/", "Francisco.png")
-        _render_persona("Gabriel Chamorro", "https://www.linkedin.com/in/gabriel-chamorro-s%C3%A1nchez-aa4347a2/", "Gabi.png")
-        _render_persona("Jose Javier Martínez", "https://www.linkedin.com/in/josejmartinezc/", "Jose.png")
+        with col_left:
+            st.subheader("Máster en Data Science")
+            st.markdown("**Profesor Tutor:**")
+            _render_persona(
+                "Jean Gustavo Cueva",
+                "https://www.linkedin.com/in/jean-gustavo-cueva-cajas-69074b90/",
+                "Gustavo.png",
+                rol="Profesor Tutor",
+            )
 
-        st.markdown("---")
-        st.markdown("**Sistema de Predicción de Cancelaciones**  \n*Palladium Hotel Group - 2026*")
+            st.markdown("---")
+            st.markdown("**Integrantes del Equipo:**")
+            _render_persona("Alejandro Batres", "https://www.linkedin.com/in/alejandro-batres-3595909b/", "Alex.png")
+            _render_persona("David Ostiz", "https://www.linkedin.com/in/david-ostiz/", "David.png")
+            _render_persona("Francisco Javier Barrionuevo", "https://www.linkedin.com/in/franciscobarrionuevo/", "Francisco.png")
+            _render_persona("Gabriel Chamorro", "https://www.linkedin.com/in/gabriel-chamorro-s%C3%A1nchez-aa4347a2/", "Gabi.png")
+            _render_persona("Jose Javier Martínez", "https://www.linkedin.com/in/josejmartinezc/", "Jose.png")
+
+            st.markdown("---")
+            st.markdown("**Sistema de Predicción de Cancelaciones**  \n*Palladium Hotel Group - 2026*")
+
+        with col_right:
+            if os.path.exists(qr_path):
+                st.markdown("<div style='height:160px'></div>", unsafe_allow_html=True)
+                c1, c2, c3 = st.columns([1, 5, 1])
+                with c2:
+                    st.image(qr_path, width=520, caption="Escanea para acceder")
     
     # -------------------------------------------------------------------------
     # PIE DE PAGINA
