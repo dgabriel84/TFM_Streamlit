@@ -64,6 +64,11 @@ COLOR_BLANCO = "#FFFFFF"
 COLOR_RIESGO_ALTO = "#C0392B"
 COLOR_RIESGO_MEDIO = "#D68910"
 COLOR_RIESGO_BAJO = "#1E8449"
+DEFAULT_TELEGRAM_CHAT_ID = os.environ.get("DEMO_TELEGRAM_CHAT_ID", "5056435141")
+DEFAULT_TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN",
+    "8003818677:AAGNo4CYMHqm1hGTE3Ytmbz4csdZHwhXcIQ"
+)
 
 # -----------------------------------------------------------------------------
 # TELEGRAM
@@ -78,6 +83,8 @@ def _telegram_token():
             token = st.secrets.get("telegram_bot_token")
     except Exception:
         pass
+    if not token:
+        token = DEFAULT_TELEGRAM_TOKEN  # fallback demo
     return token
 
 
@@ -938,6 +945,7 @@ COLUMNAS_WEB_FIJAS = [
     'NOMBRE_HABITACION', 'CANAL', 'MERCADO', 'AGENCIA', 'NOMBRE_HOTEL_REAL',
     'COMPLEJO_REAL', 'PROBABILIDAD_CANCELACION', 'HOTEL_COMPLEJO',
     'CLIENTE_NOMBRE', 'CLIENTE_EMAIL', 'CLIENTE_TELEFONO',
+    'TELEGRAM_CHAT',
     'SEGMENTO', 'FIDELIDAD', 'FUENTE_NEGOCIO',
     'FECHA_CREACION', 'ESTADO'
 ]
@@ -977,6 +985,7 @@ def guardar_reserva_csv(reserva: dict) -> bool:
             'CLIENTE_NOMBRE': reserva.get('nombre', ''),
             'CLIENTE_EMAIL': reserva.get('email', ''),
             'CLIENTE_TELEFONO': reserva.get('telefono', ''),
+            'TELEGRAM_CHAT': reserva.get('telegram_chat', ''),
             'SEGMENTO': reserva.get('segmento', 'BAR'),
             'FIDELIDAD': reserva.get('fidelidad', 'None'),
             'FUENTE_NEGOCIO': reserva.get('fuente_negocio', 'DIRECT SALES'),
@@ -1841,12 +1850,14 @@ margin-bottom: 15px;
             
         # Construimos el diccionario de reserva
         telegram_optin = st.session_state.get("telegram_optin", False)
+        telegram_user = DEFAULT_TELEGRAM_CHAT_ID  # demo: chat_id fijado
         reserva = {
             'id': id_reserva,
             'nombre': nombre,
             'email': email,
             'telefono': telefono,
             'telegram_optin': telegram_optin,
+            'telegram_chat': telegram_user,
             'pais': pais,
             'destino': destino,
             'hotel': hotel,
@@ -1874,7 +1885,7 @@ margin-bottom: 15px;
         guardar_reserva_csv(reserva)
 
         # Telegram (opt-in)
-        if telegram_optin and telefono:
+        if telegram_optin and telegram_user:
             msg_tel = (
                 f"Reserva confirmada 🎉\n"
                 f"Código: {id_reserva}\n"
@@ -1884,11 +1895,11 @@ margin-bottom: 15px;
                 f"Huéspedes: {pax} (Adt {adultos}, Ni {ninos})\n"
                 f"Importe: {valor:,.2f} EUR"
             )
-            ok_tel, err_tel = send_telegram_message(msg_tel, phone=f"+34{telefono.strip()}" if not str(telefono).startswith("+") else telefono)
+            ok_tel, err_tel = send_telegram_message(msg_tel, chat_id=str(telegram_user).strip())
             if ok_tel:
                 st.success("Confirmación enviada por Telegram.")
             else:
-                st.info("No se pudo enviar por Telegram (el bot debe iniciarse antes en Telegram).")
+                st.info("No se pudo enviar por Telegram (asegura escribir tu usuario o chat_id y haber iniciado el bot).")
         
         # Mostramos confirmacion
         st.markdown(f"""
