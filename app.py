@@ -1662,7 +1662,12 @@ margin-bottom: 15px;
             nombre = st.text_input("Nombre completo *", key="w_nombre")
             email = st.text_input("Email *", key="w_email")
             telefono = st.text_input("Teléfono", key="w_telefono")
-            telegram_optin = st.checkbox("Quiero recibir confirmación por Telegram", key="w_tel_optin")
+            telegram_optin = st.checkbox(
+                "Quiero recibir confirmación por Telegram",
+                key="w_tel_optin",
+                value=st.session_state.get("telegram_optin", False),
+            )
+            st.session_state.telegram_optin = telegram_optin
             
         with col_datos2:
             pais_opciones = ["ESPAÑA", "USA", "CANADA", "UK", "FRANCIA", "ALEMANIA", "ITALIA", "MEXICO", "BRASIL", "ARGENTINA", "OTRO"]
@@ -1835,6 +1840,7 @@ margin-bottom: 15px;
             cancel_prob = 0.0
             
         # Construimos el diccionario de reserva
+        telegram_optin = st.session_state.get("telegram_optin", False)
         reserva = {
             'id': id_reserva,
             'nombre': nombre,
