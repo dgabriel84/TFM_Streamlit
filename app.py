@@ -23,6 +23,7 @@ import base64
 import requests
 import json
 import textwrap
+import csv
 from io import BytesIO
 import sys
 import os
@@ -99,6 +100,10 @@ def send_telegram_message(text: str, chat_id: str = None, phone: str = None):
         return False, "Token de Telegram no configurado"
 
     destino = chat_id or phone
+    if chat_id is not None:
+        destino = str(chat_id).strip()
+        if destino.endswith(".0"):
+            destino = destino[:-2]
     if not destino:
         return False, "Sin destinatario"
 
@@ -950,6 +955,75 @@ COLUMNAS_WEB_FIJAS = [
     'FECHA_CREACION', 'ESTADO'
 ]
 
+# Estructuras heredadas para recuperar líneas antiguas/mixtas del CSV web
+COLUMNAS_WEB_LEGACY = [
+    'ID_RESERVA', 'LLEGADA', 'SALIDA', 'NOCHES', 'PAX', 'VALOR_RESERVA',
+    'NOMBRE_HABITACION', 'CANAL', 'MERCADO', 'AGENCIA', 'NOMBRE_HOTEL_REAL',
+    'COMPLEJO_REAL', 'PROBABILIDAD_CANCELACION', 'HOTEL_COMPLEJO',
+    'CLIENTE_NOMBRE', 'CLIENTE_EMAIL',
+    'SEGMENTO', 'FIDELIDAD', 'FUENTE_NEGOCIO',
+    'FECHA_CREACION', 'ESTADO'
+]
+
+COLUMNAS_WEB_CON_TELEFONO = [
+    'ID_RESERVA', 'LLEGADA', 'SALIDA', 'NOCHES', 'PAX', 'VALOR_RESERVA',
+    'NOMBRE_HABITACION', 'CANAL', 'MERCADO', 'AGENCIA', 'NOMBRE_HOTEL_REAL',
+    'COMPLEJO_REAL', 'PROBABILIDAD_CANCELACION', 'HOTEL_COMPLEJO',
+    'CLIENTE_NOMBRE', 'CLIENTE_EMAIL', 'CLIENTE_TELEFONO',
+    'SEGMENTO', 'FIDELIDAD', 'FUENTE_NEGOCIO',
+    'FECHA_CREACION', 'ESTADO'
+]
+
+
+def _leer_reservas_web_robusto(path_csv: str) -> pd.DataFrame:
+    """
+    Lee reservas web tolerando versiones mixtas del CSV (21/22/23 columnas).
+    """
+    if not os.path.exists(path_csv):
+        return pd.DataFrame(columns=COLUMNAS_WEB_FIJAS)
+
+    registros = []
+    with open(path_csv, "r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        _ = next(reader, None)  # header actual o legado
+        for row in reader:
+            if not row:
+                continue
+
+            if len(row) >= len(COLUMNAS_WEB_FIJAS):
+                item = dict(zip(COLUMNAS_WEB_FIJAS, row[:len(COLUMNAS_WEB_FIJAS)]))
+            elif len(row) == len(COLUMNAS_WEB_CON_TELEFONO):
+                item = dict(zip(COLUMNAS_WEB_CON_TELEFONO, row))
+                item["TELEGRAM_CHAT"] = ""
+            elif len(row) == len(COLUMNAS_WEB_LEGACY):
+                item = dict(zip(COLUMNAS_WEB_LEGACY, row))
+                item["CLIENTE_TELEFONO"] = ""
+                item["TELEGRAM_CHAT"] = ""
+            else:
+                continue
+
+            for col in COLUMNAS_WEB_FIJAS:
+                item.setdefault(col, "")
+            registros.append(item)
+
+    if not registros:
+        return pd.DataFrame(columns=COLUMNAS_WEB_FIJAS)
+    return pd.DataFrame(registros, columns=COLUMNAS_WEB_FIJAS)
+
+
+def _normalizar_reservas_web_csv() -> pd.DataFrame:
+    """
+    Reescribe reservas_web_2026.csv al esquema vigente para evitar líneas corruptas.
+    """
+    df_web = _leer_reservas_web_robusto(RESERVAS_WEB_PATH)
+    if not df_web.empty and "ID_RESERVA" in df_web.columns:
+        ids = df_web["ID_RESERVA"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        df_web["ID_RESERVA"] = ids
+        # Si existen duplicados por ID, se conserva la última reserva.
+        df_web = df_web.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+    df_web.to_csv(RESERVAS_WEB_PATH, index=False)
+    return df_web
+
 def guardar_reserva_csv(reserva: dict) -> bool:
     """
     Guarda una reserva nueva en el archivo dedicado de reservas web (reservas_web_2026.csv).
@@ -1001,13 +1075,22 @@ def guardar_reserva_csv(reserva: dict) -> bool:
                  df_new[col] = ''
         df_new = df_new[COLUMNAS_WEB_FIJAS]
         
-        # Guardar en archivo Web (Append o Create)
+        # Normalizar y reescribir para mantener siempre un esquema consistente.
         if os.path.exists(RESERVAS_WEB_PATH):
-            # Append sin header
-            df_new.to_csv(RESERVAS_WEB_PATH, mode='a', header=False, index=False)
+            df_existing = _normalizar_reservas_web_csv()
         else:
-            # Create con header
-            df_new.to_csv(RESERVAS_WEB_PATH, mode='w', header=True, index=False)
+            df_existing = pd.DataFrame(columns=COLUMNAS_WEB_FIJAS)
+
+        df_out = pd.concat([df_existing, df_new], ignore_index=True)
+        if "ID_RESERVA" in df_out.columns:
+            df_out["ID_RESERVA"] = (
+                df_out["ID_RESERVA"]
+                .astype(str)
+                .str.strip()
+                .str.replace(r"\.0$", "", regex=True)
+            )
+            df_out = df_out.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+        df_out.to_csv(RESERVAS_WEB_PATH, index=False)
             
         return True
     except Exception as e:
@@ -1025,8 +1108,8 @@ def cargar_reservas_csv() -> pd.DataFrame:
     # 1. Cargar Reservas Web (Prioridad Alta, Datos Ricos)
     if os.path.exists(RESERVAS_WEB_PATH):
         try:
-            # Tolerancia a fallos: Saltamos líneas corruptas automáticamente
-            df_web = pd.read_csv(RESERVAS_WEB_PATH, on_bad_lines='skip')
+            # Lectura robusta de CSV web (compatibilidad entre versiones de columnas)
+            df_web = _normalizar_reservas_web_csv()
             # Limpieza básica web
             df_web.columns = df_web.columns.astype(str).str.strip()
             df_web['ID_RESERVA'] = df_web['ID_RESERVA'].astype(str).str.strip()
@@ -1476,13 +1559,14 @@ margin-bottom: 15px;
         """), unsafe_allow_html=True)
         
         st.markdown("<h3 style='text-align: center; margin-top: 2rem;'>Seleccione su Zona de Destino</h3>", unsafe_allow_html=True)
-        
-        col_z1, col_z2 = st.columns(2)
-        
-        with col_z1:
-            img_costa = obtener_imagen_hotel("Grand Palladium Select Costa Mujeres")
-            b64_costa = get_base64_image(img_costa)
-            st.markdown(f'''
+
+        if destino == "MEXICO":
+            col_z1, col_z2 = st.columns(2)
+
+            with col_z1:
+                img_costa = obtener_imagen_hotel("Grand Palladium Select Costa Mujeres")
+                b64_costa = get_base64_image(img_costa)
+                st.markdown(f'''
 <div class="zone-selection-card">
 <div class="zone-image-container" style="background-image: url('data:image/jpeg;base64,{b64_costa}');"></div>
 <div style="padding: 1rem; text-align: center;">
@@ -1490,14 +1574,14 @@ margin-bottom: 15px;
 </div>
 </div>
 ''', unsafe_allow_html=True)
-            if st.button("SELECCIONAR COSTA MUJERES", key="sel_zone_costa", type="primary" if st.session_state.get('reserva_complejo') == "Complejo Costa Mujeres" else "secondary"):
-                st.session_state.reserva_complejo = "Complejo Costa Mujeres"
-                st.rerun()
-                
-        with col_z2:
-            img_riviera = obtener_imagen_hotel("Grand Palladium Colonial Resort & Spa")
-            b64_riviera = get_base64_image(img_riviera)
-            st.markdown(f'''
+                if st.button("SELECCIONAR COSTA MUJERES", key="sel_zone_costa", type="primary" if st.session_state.get('reserva_complejo') == "Complejo Costa Mujeres" else "secondary"):
+                    st.session_state.reserva_complejo = "Complejo Costa Mujeres"
+                    st.rerun()
+
+            with col_z2:
+                img_riviera = obtener_imagen_hotel("Grand Palladium Colonial Resort & Spa")
+                b64_riviera = get_base64_image(img_riviera)
+                st.markdown(f'''
 <div class="zone-selection-card">
 <div class="zone-image-container" style="background-image: url('data:image/jpeg;base64,{b64_riviera}');"></div>
 <div style="padding: 1rem; text-align: center;">
@@ -1505,9 +1589,25 @@ margin-bottom: 15px;
 </div>
 </div>
 ''', unsafe_allow_html=True)
-            if st.button("SELECCIONAR RIVIERA MAYA", key="sel_zone_riviera", type="primary" if st.session_state.get('reserva_complejo') == "Complejo Riviera Maya" else "secondary"):
-                st.session_state.reserva_complejo = "Complejo Riviera Maya"
-                st.rerun()
+                if st.button("SELECCIONAR RIVIERA MAYA", key="sel_zone_riviera", type="primary" if st.session_state.get('reserva_complejo') == "Complejo Riviera Maya" else "secondary"):
+                    st.session_state.reserva_complejo = "Complejo Riviera Maya"
+                    st.rerun()
+        else:
+            col_left, col_center, col_right = st.columns([1, 2, 1])
+            with col_center:
+                img_pc = obtener_imagen_hotel("Grand Palladium Select Bavaro")
+                b64_pc = get_base64_image(img_pc)
+                st.markdown(f'''
+<div class="zone-selection-card">
+<div class="zone-image-container" style="background-image: url('data:image/jpeg;base64,{b64_pc}');"></div>
+<div style="padding: 1rem; text-align: center;">
+<h4 style="margin: 0; color: {COLOR_DORADO_OSCURO}; font-family: 'Cinzel', serif;">Punta Cana</h4>
+</div>
+</div>
+''', unsafe_allow_html=True)
+                if st.button("SELECCIONAR PUNTA CANA", key="sel_zone_pc", type="primary" if st.session_state.get('reserva_complejo') == "Complejo Punta Cana" else "secondary", width="stretch"):
+                    st.session_state.reserva_complejo = "Complejo Punta Cana"
+                    st.rerun()
 
         complejo = st.session_state.get('reserva_complejo', complejos_disponibles[0])
         if complejo not in complejos_disponibles: complejo = complejos_disponibles[0]
@@ -1899,7 +1999,7 @@ margin-bottom: 15px;
             if ok_tel:
                 st.success("Confirmación enviada por Telegram.")
             else:
-                st.info("No se pudo enviar por Telegram (asegura escribir tu usuario o chat_id y haber iniciado el bot).")
+                st.info("No se pudo enviar por Telegram. Verifica que el bot esté iniciado y el token activo.")
         
         # Mostramos confirmacion
         st.markdown(f"""

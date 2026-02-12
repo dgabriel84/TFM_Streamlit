@@ -23,6 +23,7 @@ import base64
 import html
 import unicodedata
 import requests
+import csv
 
 # -----------------------------------------------------------------------------
 # CONFIGURACION DE RUTAS
@@ -62,6 +63,11 @@ COLOR_BLANCO = "#FFFFFF"
 COLOR_RIESGO_ALTO = "#C0392B"
 COLOR_RIESGO_MEDIO = "#D68910"
 COLOR_RIESGO_BAJO = "#1E8449"
+DEFAULT_TELEGRAM_CHAT_ID = os.environ.get("DEMO_TELEGRAM_CHAT_ID", "5056435141")
+DEFAULT_TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN",
+    "8003818677:AAGNo4CYMHqm1hGTE3Ytmbz4csdZHwhXcIQ"
+)
 
 # -----------------------------------------------------------------------------
 # TELEGRAM
@@ -73,6 +79,8 @@ def _telegram_token():
             token = st.secrets.get("telegram_bot_token")
     except Exception:
         pass
+    if not token:
+        token = DEFAULT_TELEGRAM_TOKEN
     return token
 
 
@@ -81,6 +89,10 @@ def send_telegram_message(text: str, chat_id: str = None, phone: str = None):
     if not token:
         return False, "Token de Telegram no configurado"
     destino = chat_id or phone
+    if chat_id is not None:
+        destino = str(chat_id).strip()
+        if destino.endswith(".0"):
+            destino = destino[:-2]
     if not destino:
         return False, "Sin destinatario"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -605,6 +617,83 @@ def _catalogo_ofertas_retencion(prob_cancel):
     ]
 
 
+WEB_COLS_ACTUAL = [
+    "ID_RESERVA", "LLEGADA", "SALIDA", "NOCHES", "PAX", "VALOR_RESERVA",
+    "NOMBRE_HABITACION", "CANAL", "MERCADO", "AGENCIA", "NOMBRE_HOTEL_REAL",
+    "COMPLEJO_REAL", "PROBABILIDAD_CANCELACION", "HOTEL_COMPLEJO",
+    "CLIENTE_NOMBRE", "CLIENTE_EMAIL", "CLIENTE_TELEFONO", "TELEGRAM_CHAT",
+    "SEGMENTO", "FIDELIDAD", "FUENTE_NEGOCIO", "FECHA_CREACION", "ESTADO",
+]
+WEB_COLS_TELEFONO = [
+    "ID_RESERVA", "LLEGADA", "SALIDA", "NOCHES", "PAX", "VALOR_RESERVA",
+    "NOMBRE_HABITACION", "CANAL", "MERCADO", "AGENCIA", "NOMBRE_HOTEL_REAL",
+    "COMPLEJO_REAL", "PROBABILIDAD_CANCELACION", "HOTEL_COMPLEJO",
+    "CLIENTE_NOMBRE", "CLIENTE_EMAIL", "CLIENTE_TELEFONO",
+    "SEGMENTO", "FIDELIDAD", "FUENTE_NEGOCIO", "FECHA_CREACION", "ESTADO",
+]
+WEB_COLS_LEGACY = [
+    "ID_RESERVA", "LLEGADA", "SALIDA", "NOCHES", "PAX", "VALOR_RESERVA",
+    "NOMBRE_HABITACION", "CANAL", "MERCADO", "AGENCIA", "NOMBRE_HOTEL_REAL",
+    "COMPLEJO_REAL", "PROBABILIDAD_CANCELACION", "HOTEL_COMPLEJO",
+    "CLIENTE_NOMBRE", "CLIENTE_EMAIL",
+    "SEGMENTO", "FIDELIDAD", "FUENTE_NEGOCIO", "FECHA_CREACION", "ESTADO",
+]
+
+
+def _leer_reservas_web_robusto(csv_path):
+    """
+    Lee reservas web aunque existan líneas con 21/22/23 columnas.
+    """
+    if not os.path.exists(csv_path):
+        return pd.DataFrame(columns=WEB_COLS_ACTUAL)
+
+    registros = []
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        _ = next(reader, None)
+        for row in reader:
+            if not row:
+                continue
+
+            if len(row) >= len(WEB_COLS_ACTUAL):
+                item = dict(zip(WEB_COLS_ACTUAL, row[:len(WEB_COLS_ACTUAL)]))
+            elif len(row) == len(WEB_COLS_TELEFONO):
+                item = dict(zip(WEB_COLS_TELEFONO, row))
+                item["TELEGRAM_CHAT"] = ""
+            elif len(row) == len(WEB_COLS_LEGACY):
+                item = dict(zip(WEB_COLS_LEGACY, row))
+                item["CLIENTE_TELEFONO"] = ""
+                item["TELEGRAM_CHAT"] = ""
+            else:
+                continue
+
+            for c in WEB_COLS_ACTUAL:
+                item.setdefault(c, "")
+            registros.append(item)
+
+    if not registros:
+        return pd.DataFrame(columns=WEB_COLS_ACTUAL)
+
+    df = pd.DataFrame(registros, columns=WEB_COLS_ACTUAL)
+    if "ID_RESERVA" in df.columns:
+        df["ID_RESERVA"] = (
+            df["ID_RESERVA"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        )
+    return df
+
+
+def _normalizar_reservas_web_intranet(csv_path):
+    """
+    Reescribe el CSV web en formato consistente para que pandas no descarte filas.
+    """
+    df = _leer_reservas_web_robusto(csv_path)
+    if not df.empty and "ID_RESERVA" in df.columns:
+        df = df.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+    if os.path.exists(csv_path) or not df.empty:
+        df.to_csv(csv_path, index=False)
+    return df
+
+
 def _persistir_campos_oferta_reserva(id_reserva, updates):
     """
     Persiste campos de oferta en ambos CSVs de reservas (web + histórico).
@@ -627,7 +716,10 @@ def _persistir_campos_oferta_reserva(id_reserva, updates):
         if not os.path.exists(csv_path):
             continue
         try:
-            df = pd.read_csv(csv_path)
+            if csv_path.endswith("reservas_web_2026.csv"):
+                df = _normalizar_reservas_web_intranet(csv_path)
+            else:
+                df = pd.read_csv(csv_path)
             if "ID_RESERVA" not in df.columns:
                 continue
 
@@ -665,7 +757,10 @@ def _buscar_reserva_por_id_local(id_reserva):
         if not os.path.exists(p):
             continue
         try:
-            df_tmp = pd.read_csv(p, on_bad_lines="skip")
+            if p.endswith("reservas_web_2026.csv"):
+                df_tmp = _normalizar_reservas_web_intranet(p)
+            else:
+                df_tmp = pd.read_csv(p, on_bad_lines="skip")
             if not df_tmp.empty:
                 dfs.append(df_tmp)
         except Exception:
@@ -727,6 +822,14 @@ def _buscar_reserva_por_id_local(id_reserva):
     if pd.isna(ninos):
         ninos = 0
 
+    chat_raw = row.get("TELEGRAM_CHAT", "")
+    if pd.notna(chat_raw):
+        chat_clean = str(chat_raw).strip()
+        if chat_clean.endswith(".0"):
+            chat_clean = chat_clean[:-2]
+    else:
+        chat_clean = ""
+
     return {
         "id": str(row.get("ID_RESERVA", id_norm)),
         "id_reserva": str(row.get("ID_RESERVA", id_norm)),
@@ -735,6 +838,7 @@ def _buscar_reserva_por_id_local(id_reserva):
         "email": str(email),
         "cliente_email": str(email),
         "telefono": row.get("CLIENTE_TELEFONO", ""),
+        "telegram_chat": chat_clean,
         "hotel": row.get("NOMBRE_HOTEL_REAL", row.get("hotel", "Hotel")),
         "habitacion": row.get("NOMBRE_HABITACION", row.get("habitacion", "Estándar")),
         "llegada": llegada_fmt,
@@ -872,7 +976,7 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
         web_path = os.path.join(base_dir_app, "reservas_web_2026.csv")
         if os.path.exists(web_path):
             try:
-                df_web = pd.read_csv(web_path, on_bad_lines='skip')
+                df_web = _normalizar_reservas_web_intranet(web_path)
                 if 'ID_RESERVA' in df_web.columns:
                     df_web['ID_RESERVA'] = df_web['ID_RESERVA'].astype(str).str.strip()
                 if 'ID_RESERVA' in df.columns:
@@ -2004,19 +2108,28 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                                 else:
                                     st.success("Oferta enviada al cliente.")
 
-                                # Telegram (si hay telefono)
+                                # Telegram (prioriza chat_id guardado)
+                                chat_dest = (
+                                    reserva.get("telegram_chat")
+                                    or reserva.get("raw_data", {}).get("TELEGRAM_CHAT", "")
+                                    or DEFAULT_TELEGRAM_CHAT_ID
+                                )
                                 tel_dest = reserva.get("telefono") or reserva.get("raw_data", {}).get("CLIENTE_TELEFONO", "")
-                                if tel_dest:
+                                if chat_dest or tel_dest:
                                     msg = (
                                         f"Oferta de retención enviada ✅\n"
                                         f"Reserva: {r_id}\n"
                                         f"Cliente: {r_nombre}\n"
                                         f"Oferta: {oferta_texto}"
                                     )
-                                    telefono_fmt = str(tel_dest).strip()
-                                    if not telefono_fmt.startswith("+"):
-                                        telefono_fmt = f"+34{telefono_fmt}"
-                                    ok_tel, _ = send_telegram_message(msg, phone=telefono_fmt)
+                                    dest_chat = str(chat_dest).strip() if chat_dest else None
+                                    dest_phone = None
+                                    if not dest_chat and tel_dest:
+                                        telefono_fmt = str(tel_dest).strip()
+                                        if not telefono_fmt.startswith("+"):
+                                            telefono_fmt = f"+34{telefono_fmt}"
+                                        dest_phone = telefono_fmt
+                                    ok_tel, _ = send_telegram_message(msg, chat_id=dest_chat, phone=dest_phone)
                                     if ok_tel:
                                         st.info("Notificación enviada por Telegram.")
                                     else:
