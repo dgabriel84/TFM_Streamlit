@@ -211,11 +211,11 @@ CUSTOM_CSS = f"""
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     }}
     
-    /* Botones */
+    /* Botones base */
     .stButton > button {{
-        background-color: {COLOR_DORADO} !important;
-        color: {COLOR_BLANCO} !important;
-        border: none !important;
+        background-color: {COLOR_BLANCO} !important;
+        color: {COLOR_DORADO_OSCURO} !important;
+        border: 1px solid {COLOR_BEIGE} !important;
         border-radius: 8px !important; /* Redondeado 8px */
         font-weight: 500 !important;
         text-transform: uppercase !important;
@@ -226,9 +226,29 @@ CUSTOM_CSS = f"""
     }}
     
     .stButton > button:hover {{
+        background-color: {COLOR_CREMA} !important;
+        color: {COLOR_DORADO_OSCURO} !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.08) !important;
+    }}
+
+    /* Primario (dorado) */
+    .stButton > button[kind="primary"] {{
+        background-color: {COLOR_DORADO} !important;
+        color: {COLOR_BLANCO} !important;
+        border: none !important;
+    }}
+
+    .stButton > button[kind="primary"]:hover {{
         background-color: {COLOR_DORADO_OSCURO} !important;
         color: {COLOR_BLANCO} !important;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+    }}
+
+    /* Secundario (blanco) */
+    .stButton > button[kind="secondary"] {{
+        background-color: {COLOR_BLANCO} !important;
+        color: {COLOR_DORADO_OSCURO} !important;
+        border: 1px solid {COLOR_BEIGE} !important;
     }}
     
     /* Sidebar */
@@ -784,14 +804,21 @@ def _buscar_reserva_por_id_local(id_reserva):
         except Exception:
             continue
 
+    id_norm = _normalizar_id_reserva(id_reserva)
+    if not id_norm:
+        return {}
+
+    # Fallback adicional: maestro en memoria (útil para datos sintéticos no persistidos en CSV).
+    df_mem = st.session_state.get("df_maestro")
+    if isinstance(df_mem, pd.DataFrame) and not df_mem.empty:
+        dfs.append(df_mem.copy())
+
     if not dfs:
         return {}
 
     df = pd.concat(dfs, ignore_index=True)
     if "ID_RESERVA" not in df.columns:
         return {}
-
-    id_norm = _normalizar_id_reserva(id_reserva)
 
     df["ID_RESERVA"] = df["ID_RESERVA"].apply(_normalizar_id_reserva)
     match = df[df["ID_RESERVA"] == id_norm]
@@ -1067,6 +1094,7 @@ def enriquecer_nombres_hoteles(df):
     """Mapea códigos a Nombres Reales y Complejos"""
     HOTELES_INFO = {
         "MUJE_CMU": ("Grand Palladium Costa Mujeres Resort & Spa", "Complejo Costa Mujeres"),
+        "MUJE_CMU_FS": ("Family Selection Costa Mujeres", "Complejo Costa Mujeres"),
         "MUJE_TRS": ("TRS Coral Hotel", "Complejo Costa Mujeres"),
         "MUJE_TRSC": ("TRS Coral Hotel", "Complejo Costa Mujeres"),
         "MAYA_KAN": ("Grand Palladium Kantenah", "Complejo Riviera Maya"),
@@ -1129,6 +1157,7 @@ def _strip_accents(value):
 
 HOTELES_OCUPACION_INFO = {
     "Grand Palladium Costa Mujeres Resort & Spa": {"complejo": "Complejo Costa Mujeres", "capacidad": 670},
+    "Family Selection Costa Mujeres": {"complejo": "Complejo Costa Mujeres", "capacidad": 650},
     "TRS Coral Hotel": {"complejo": "Complejo Costa Mujeres", "capacidad": 469},
     "Grand Palladium Kantenah": {"complejo": "Complejo Riviera Maya", "capacidad": 422},
     "Grand Palladium Colonial": {"complejo": "Complejo Riviera Maya", "capacidad": 413},
@@ -1165,7 +1194,9 @@ def _normalizar_hotel_ocupacion(hotel):
         "grand palladium kantenah resort & spa": "Grand Palladium Kantenah",
         "grand palladium white sand resort & spa": "Grand Palladium White Sand",
         "maya_ws": "Grand Palladium White Sand",
-        "muje_cmu_fs": "Grand Palladium Costa Mujeres Resort & Spa",
+        "family selection costa mujeres": "Family Selection Costa Mujeres",
+        "family selection costa mujeres resort & spa": "Family Selection Costa Mujeres",
+        "muje_cmu_fs": "Family Selection Costa Mujeres",
         "web_direct": "",
     }
     if key in alias:
@@ -1424,7 +1455,12 @@ def main():
             
             # Barras apiladas
             barras = base.mark_bar().encode(
-                y=alt.Y('Habitaciones', stack='zero', title='Habitaciones Ocupadas'),
+                y=alt.Y(
+                    'Habitaciones',
+                    stack='zero',
+                    title='Habitaciones Ocupadas',
+                    scale=alt.Scale(domain=[0, 4000]),
+                ),
                 color=alt.Color('Nivel_Riesgo', 
                                 scale=alt.Scale(domain=domain_colors, range=range_colors), 
                                 legend=alt.Legend(title="Riesgo de Cancelación", orient="top")),
@@ -1664,11 +1700,11 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
 
             | Métrica | Valor |
             |---------|-------|
-            | **AUC-ROC** | 0.8704 |
-            | **Accuracy** | 77.55% |
-            | **Precision** | 66.48% |
-            | **Recall** | 80.10% |
-            | **F1-Score** | 72.66% |
+            | **AUC-ROC** | 0.80 |
+            | **Accuracy** | 78.98% |
+            | **Precision** | 68.12% |
+            | **Recall** | 81.85% |
+            | **F1-Score** | 74.35% |
             """)
 
         st.markdown("""
@@ -1679,6 +1715,8 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
         - `ADR` - Tarifa media diaria
         - `PAIS_TOP_200` - País de origen
         - `COMPLEJO_RESERVA` - Complejo/Hotel/Habitación
+        - `MES_LLEGADA_SIN/COS` - Mes de comienzo de estancia
+        - `PAX` - Número de personas de reserva
         - `REV_PAX` - Ingresos por huésped
         - `NOCHES` - Duración de la estancia
         - `HORA_TOMA_SIN/COS` - Hora de la reserva (cíclica)
@@ -1687,7 +1725,9 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
 
         - **Período:** 2022-2023
         - **Predicciones:** Año 2026
-        - **Registros:** ~202,494 reservas
+        - **Registros:** ~674,977 reservas
+        - **Train:** 70%
+        - **Test:** 30%
         """)
 
         st.markdown("### Explicabilidad (Waterfall SHAP)")
@@ -1979,7 +2019,16 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                     else:
                         search_shap_error = "La reserva no tiene fecha de llegada válida para generar SHAP."
                 except Exception as e:
-                    search_shap_error = f"No se pudo preparar SHAP para esta reserva: {e}"
+                    err_txt = str(e)
+                    if "ufunc 'add'" in err_txt or "did not contain a loop with signature matching types" in err_txt:
+                        search_shap_error = (
+                            "No se pudo preparar SHAP para esta reserva: "
+                            "ufunc 'add' did not contain a loop with signature matching types "
+                            "(dtype('float64'), dtype('<U1')) -> None\n"
+                            "Reserva procedente de dataset sintético, sin datos para generar SHAP."
+                        )
+                    else:
+                        search_shap_error = f"No se pudo preparar SHAP para esta reserva: {e}"
 
                 # Adaptar claves (app.py devuelve 'cancel_prob', 'nombre', etc.)
                 prob = reserva.get('cancel_prob', reserva.get('prob_cancelacion', 0))
