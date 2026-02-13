@@ -694,6 +694,26 @@ def _normalizar_reservas_web_intranet(csv_path):
     return df
 
 
+def _normalizar_id_reserva(valor):
+    """
+    Normaliza IDs que pueden venir como float/string (incluida notación científica).
+    """
+    if pd.isna(valor):
+        return ""
+    s = str(valor).strip()
+    if not s or s.lower() in {"nan", "none"}:
+        return ""
+    if s.endswith(".0"):
+        s = s[:-2]
+    try:
+        f = float(s)
+        if np.isfinite(f) and f.is_integer():
+            return str(int(f))
+    except Exception:
+        pass
+    return s
+
+
 def _persistir_campos_oferta_reserva(id_reserva, updates):
     """
     Persiste campos de oferta en ambos CSVs de reservas (web + histórico).
@@ -708,9 +728,7 @@ def _persistir_campos_oferta_reserva(id_reserva, updates):
     ]
 
     updated_any = False
-    id_norm = str(id_reserva).strip()
-    if id_norm.endswith(".0"):
-        id_norm = id_norm[:-2]
+    id_norm = _normalizar_id_reserva(id_reserva)
 
     for csv_path in candidatos:
         if not os.path.exists(csv_path):
@@ -723,7 +741,7 @@ def _persistir_campos_oferta_reserva(id_reserva, updates):
             if "ID_RESERVA" not in df.columns:
                 continue
 
-            ids = df["ID_RESERVA"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            ids = df["ID_RESERVA"].apply(_normalizar_id_reserva)
             mask = ids == id_norm
             if not mask.any():
                 continue
@@ -773,16 +791,9 @@ def _buscar_reserva_por_id_local(id_reserva):
     if "ID_RESERVA" not in df.columns:
         return {}
 
-    id_norm = str(id_reserva).strip()
-    if id_norm.endswith(".0"):
-        id_norm = id_norm[:-2]
+    id_norm = _normalizar_id_reserva(id_reserva)
 
-    df["ID_RESERVA"] = (
-        df["ID_RESERVA"]
-        .astype(str)
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
-    )
+    df["ID_RESERVA"] = df["ID_RESERVA"].apply(_normalizar_id_reserva)
     match = df[df["ID_RESERVA"] == id_norm]
     if match.empty:
         return {}
@@ -831,8 +842,8 @@ def _buscar_reserva_por_id_local(id_reserva):
         chat_clean = ""
 
     return {
-        "id": str(row.get("ID_RESERVA", id_norm)),
-        "id_reserva": str(row.get("ID_RESERVA", id_norm)),
+        "id": _normalizar_id_reserva(row.get("ID_RESERVA", id_norm)),
+        "id_reserva": _normalizar_id_reserva(row.get("ID_RESERVA", id_norm)),
         "nombre": str(nombre),
         "cliente_nombre": str(nombre),
         "email": str(email),
@@ -1667,7 +1678,7 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
         - `FUENTE_NEGOCIO_SEGMENTO_CLIENTE` - Origen y tipo de cliente
         - `ADR` - Tarifa media diaria
         - `PAIS_TOP_200` - País de origen
-        - `COMPLEJO_RESERVA` - Hotel/Complejo
+        - `COMPLEJO_RESERVA` - Complejo/Hotel/Habitación
         - `REV_PAX` - Ingresos por huésped
         - `NOCHES` - Duración de la estancia
         - `HORA_TOMA_SIN/COS` - Hora de la reserva (cíclica)
@@ -1714,6 +1725,13 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
             # Vamos a trabajar con el maestro directo
             
             df_view = df_maestro.copy()
+            df_view["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
+                df_view.get("PROBABILIDAD_CANCELACION", 0), errors="coerce"
+            )
+            df_view["VALOR_RESERVA"] = pd.to_numeric(
+                df_view.get("VALOR_RESERVA", 0), errors="coerce"
+            )
+            df_view["LLEGADA"] = pd.to_datetime(df_view.get("LLEGADA"), errors="coerce")
             
             # Filtros
             col_f1, col_f2, col_f3, col_f4 = st.columns(4)
@@ -1761,11 +1779,11 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
             
             # Ordenar
             if ordenar_por == "Riesgo (mayor)":
-                df_view = df_view.sort_values('PROBABILIDAD_CANCELACION', ascending=False)
+                df_view = df_view.sort_values('PROBABILIDAD_CANCELACION', ascending=False, na_position="last")
             elif ordenar_por == "Llegada (próxima)":
-                df_view = df_view.sort_values('LLEGADA', ascending=True)
+                df_view = df_view.sort_values('LLEGADA', ascending=True, na_position="last")
             elif ordenar_por == "Valor (mayor)":
-                df_view = df_view.sort_values('VALOR_RESERVA', ascending=False)
+                df_view = df_view.sort_values('VALOR_RESERVA', ascending=False, na_position="last")
             
             st.markdown("---")
             
@@ -2021,13 +2039,22 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    if reserva.get('oferta_retencion'):
-                        st.markdown(f"""
-                        <div style="background: {COLOR_DORADO}; color: white; padding: 0.8rem; border-radius: 6px; margin-top: 1rem; text-align: center;">
-                            <p style="margin: 0; font-size: 0.75rem;">Oferta enviada</p>
-                            <p style="margin: 0; font-weight: 600;">{reserva.get('oferta_retencion')}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    oferta_raw = reserva.get("oferta_retencion", "")
+                    oferta_txt = str(oferta_raw).strip()
+                    oferta_valida = oferta_txt and oferta_txt.lower() not in {"nan", "none"}
+                    if oferta_valida:
+                        oferta_header = "Oferta enviada"
+                        oferta_body = oferta_txt
+                    else:
+                        oferta_header = "No enviada oferta"
+                        oferta_body = "No enviada oferta"
+
+                    st.markdown(f"""
+                    <div style="background: {COLOR_DORADO}; color: white; padding: 0.8rem; border-radius: 6px; margin-top: 1rem; text-align: center;">
+                        <p style="margin: 0; font-size: 0.75rem;">{oferta_header}</p>
+                        <p style="margin: 0; font-weight: 600;">{oferta_body}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 # --- SHAP (Waterfall) ---
                 shap_png = st.session_state.get("shap_waterfall_png")
