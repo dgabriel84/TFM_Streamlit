@@ -1441,6 +1441,13 @@ def main():
                 var_name='Nivel_Riesgo', 
                 value_name='Habitaciones'
             )
+            # Zoom adaptativo por hotel/complejo, con tope superior para evitar escalas exageradas
+            max_ocup = float(pd.to_numeric(df_final_viz.get("Ocupadas_Brutas"), errors="coerce").max() or 0)
+            max_cap = float(pd.to_numeric(df_final_viz.get("Capacidad"), errors="coerce").max() or 0)
+            y_max = max(max_ocup, max_cap) * 1.15
+            if not np.isfinite(y_max) or y_max <= 0:
+                y_max = 100.0
+            y_max = min(4000.0, y_max)
             
             # Orden de apilamiento: Bajo (Abajo) -> Medio -> Alto (Arriba)
             risk_order = {'Riesgo_Bajo': 1, 'Riesgo_Medio': 2, 'Riesgo_Alto': 3}
@@ -1459,7 +1466,7 @@ def main():
                     'Habitaciones',
                     stack='zero',
                     title='Habitaciones Ocupadas',
-                    scale=alt.Scale(domain=[0, 4000]),
+                    scale=alt.Scale(domain=[0, y_max]),
                 ),
                 color=alt.Color('Nivel_Riesgo', 
                                 scale=alt.Scale(domain=domain_colors, range=range_colors), 
