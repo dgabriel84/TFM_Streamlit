@@ -9,3 +9,5 @@ scikit-learn
 edge-tts
 groq
 shap
+gspread
+google-auth

@@ -24,6 +24,14 @@ import html
 import unicodedata
 import requests
 import csv
+from google_sheets_store import (
+    SHEET_RESERVAS_WEB,
+    SHEET_RESERVAS_HIST,
+    read_sheet_df,
+    sheets_enabled,
+    update_sheet_fields_by_id,
+    write_sheet_df,
+)
 
 # -----------------------------------------------------------------------------
 # CONFIGURACION DE RUTAS
@@ -709,6 +717,20 @@ def _normalizar_reservas_web_intranet(csv_path):
     df = _leer_reservas_web_robusto(csv_path)
     if not df.empty and "ID_RESERVA" in df.columns:
         df = df.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+
+    # Si Google Sheets está activo, la hoja de reservas web pasa a ser la fuente principal.
+    if sheets_enabled():
+        try:
+            df_sheet = read_sheet_df(SHEET_RESERVAS_WEB, headers=WEB_COLS_ACTUAL)
+            if df_sheet.empty:
+                if not df.empty:
+                    write_sheet_df(SHEET_RESERVAS_WEB, df, headers=WEB_COLS_ACTUAL)
+            else:
+                df_sheet["ID_RESERVA"] = df_sheet["ID_RESERVA"].apply(_normalizar_id_reserva)
+                df = df_sheet.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+        except Exception:
+            pass
+
     if os.path.exists(csv_path) or not df.empty:
         df.to_csv(csv_path, index=False)
     return df
@@ -824,6 +846,26 @@ def _persistir_campos_oferta_reserva(id_reserva, updates):
 
             df.to_csv(csv_path, index=False)
             updated_any = True
+            if sheets_enabled() and csv_path.endswith("reservas_web_2026.csv"):
+                try:
+                    update_sheet_fields_by_id(
+                        SHEET_RESERVAS_WEB,
+                        id_norm,
+                        updates,
+                        key_col="ID_RESERVA",
+                    )
+                except Exception:
+                    pass
+            if sheets_enabled() and csv_path.endswith("reservas_2026_full.csv"):
+                try:
+                    update_sheet_fields_by_id(
+                        SHEET_RESERVAS_HIST,
+                        id_norm,
+                        updates,
+                        key_col="ID_RESERVA",
+                    )
+                except Exception:
+                    pass
         except Exception:
             continue
 
@@ -1065,6 +1107,16 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
         # Optimización: Cargar solo columnas necesarias si es muy pesado para visualización
         # Pero para gestión necesitamos detalle. Leemos con tipos optimizados.
         df = pd.read_csv(path_maestro)
+        if sheets_enabled():
+            try:
+                df_hist_sheet = read_sheet_df(SHEET_RESERVAS_HIST, headers=None)
+                if df_hist_sheet.empty:
+                    # Semilla inicial del dataset sintético en la hoja histórica.
+                    write_sheet_df(SHEET_RESERVAS_HIST, df, headers=list(df.columns))
+                else:
+                    df = df_hist_sheet
+            except Exception:
+                pass
         df['LLEGADA'] = pd.to_datetime(df['LLEGADA'])
         df['SALIDA'] = pd.to_datetime(df['SALIDA'])
         

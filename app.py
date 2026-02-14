@@ -29,6 +29,13 @@ import sys
 import os
 import numpy as np
 import random
+from google_sheets_store import (
+    SHEET_RESERVAS_WEB,
+    read_sheet_df,
+    sheets_enabled,
+    upsert_sheet_row,
+    write_sheet_df,
+)
 
 # -----------------------------------------------------------------------------
 # CONFIGURACION DE RUTAS
@@ -1021,6 +1028,27 @@ def _normalizar_reservas_web_csv() -> pd.DataFrame:
         df_web["ID_RESERVA"] = ids
         # Si existen duplicados por ID, se conserva la última reserva.
         df_web = df_web.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+
+    # Si Google Sheets está habilitado, usamos la hoja como fuente principal de reservas web.
+    if sheets_enabled():
+        try:
+            df_sheet = read_sheet_df(SHEET_RESERVAS_WEB, headers=COLUMNAS_WEB_FIJAS)
+            if df_sheet.empty:
+                # Primera carga: sembrar la hoja con lo que exista en local.
+                if not df_web.empty:
+                    write_sheet_df(SHEET_RESERVAS_WEB, df_web, headers=COLUMNAS_WEB_FIJAS)
+            else:
+                df_sheet["ID_RESERVA"] = (
+                    df_sheet["ID_RESERVA"]
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                df_web = df_sheet.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+        except Exception:
+            # Fallback silencioso a local para no romper flujo de reservas.
+            pass
+
     df_web.to_csv(RESERVAS_WEB_PATH, index=False)
     return df_web
 
@@ -1091,6 +1119,19 @@ def guardar_reserva_csv(reserva: dict) -> bool:
             )
             df_out = df_out.drop_duplicates(subset=["ID_RESERVA"], keep="last")
         df_out.to_csv(RESERVAS_WEB_PATH, index=False)
+
+        # Persistencia remota opcional en Google Sheets (upsert por ID).
+        if sheets_enabled():
+            try:
+                upsert_sheet_row(
+                    SHEET_RESERVAS_WEB,
+                    row_data,
+                    key_col="ID_RESERVA",
+                    headers=COLUMNAS_WEB_FIJAS,
+                )
+            except Exception:
+                # No bloqueamos la reserva si falla la sincronización remota.
+                pass
             
         return True
     except Exception as e:
