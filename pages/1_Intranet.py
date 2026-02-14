@@ -2127,6 +2127,37 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                         st.session_state.last_manual_pred_features = processed_df.copy()
                         st.session_state.last_manual_pred_label = f"Reserva {r_id_tmp}"
 
+                        # Si la reserva viene sin probabilidad (o a 0 por error de guardado),
+                        # la recalculamos aquí y la persistimos.
+                        try:
+                            prob_actual = pd.to_numeric(
+                                reserva.get("cancel_prob", reserva.get("prob_cancelacion", 0)),
+                                errors="coerce",
+                            )
+                            if pd.isna(prob_actual):
+                                prob_actual = 0.0
+                            if float(prob_actual) > 1.0:
+                                prob_actual = float(prob_actual) / 100.0
+
+                            if float(prob_actual) <= 0.0 and model is not None:
+                                pred_features = processed_df
+                                if hasattr(model, "feature_name_"):
+                                    faltantes = [c for c in model.feature_name_ if c not in pred_features.columns]
+                                    for c in faltantes:
+                                        pred_features[c] = 0
+                                    pred_features = pred_features[model.feature_name_]
+
+                                pred_prob = float(model.predict_proba(pred_features)[0][1])
+                                pred_prob = max(0.0, min(1.0, pred_prob))
+                                reserva["cancel_prob"] = pred_prob
+                                reserva["prob_cancelacion"] = pred_prob * 100.0
+                                st.session_state.intranet_search_result = reserva
+
+                                updates_prob = {"PROBABILIDAD_CANCELACION": pred_prob}
+                                _persistir_campos_oferta_reserva(str(r_id_tmp), updates_prob)
+                        except Exception:
+                            pass
+
                         # Generar SHAP para la reserva buscada.
                         shap_ok, shap_err = _generar_waterfall_shap_desde_features(
                             model,
