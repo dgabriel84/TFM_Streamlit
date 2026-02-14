@@ -106,6 +106,11 @@ def _ensure_worksheet(spreadsheet, title: str, headers: Optional[List[str]] = No
         first = ws.row_values(1)
         if not first:
             ws.update("A1", [headers])
+        else:
+            # Si la hoja ya existe pero faltan columnas nuevas, ampliamos cabecera.
+            missing = [h for h in headers if h not in first]
+            if missing:
+                ws.update("A1", [first + missing])
     return ws
 
 
@@ -217,6 +222,12 @@ def update_sheet_fields_by_id(
     if not headers or key_col not in headers:
         return False
 
+    # Si intentamos actualizar columnas que no existen todavía, las añadimos.
+    missing_cols = [k for k in updates.keys() if k not in headers]
+    if missing_cols:
+        ws.update("A1", [headers + missing_cols])
+        headers = ws.row_values(1)
+
     id_idx = headers.index(key_col) + 1
     rows = ws.col_values(id_idx)
     target_row = None
@@ -236,4 +247,3 @@ def update_sheet_fields_by_id(
             current[headers.index(k)] = "" if v is None else str(v)
     ws.update(f"A{target_row}", [current])
     return True
-
