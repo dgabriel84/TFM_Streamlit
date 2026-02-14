@@ -1383,10 +1383,37 @@ def calcular_ocupacion_vectorizada(df, _dates):
     if df_work.empty:
         return pd.DataFrame()
 
-    if "LLEGADA" not in df_work.columns or "SALIDA" not in df_work.columns:
+    if "LLEGADA" not in df_work.columns:
         return pd.DataFrame()
-    df_work["LLEGADA"] = pd.to_datetime(df_work["LLEGADA"], errors="coerce")
-    df_work["SALIDA"] = pd.to_datetime(df_work["SALIDA"], errors="coerce")
+
+    def _parse_dates_robusta(series):
+        # Primer pase: formato internacional (YYYY-MM-DD)
+        dt = pd.to_datetime(series, errors="coerce")
+        # Segundo pase para nulos: formato europeo (DD-MM-YYYY / DD/MM/YYYY)
+        mask = dt.isna()
+        if mask.any():
+            dt2 = pd.to_datetime(series[mask], errors="coerce", dayfirst=True)
+            dt.loc[mask] = dt2
+        return dt
+
+    df_work["LLEGADA"] = _parse_dates_robusta(df_work["LLEGADA"])
+    if "SALIDA" in df_work.columns:
+        df_work["SALIDA"] = _parse_dates_robusta(df_work["SALIDA"])
+    else:
+        df_work["SALIDA"] = pd.NaT
+
+    # Si no hay SALIDA válida, la reconstruimos con NOCHES (fallback robusto).
+    if "NOCHES" in df_work.columns:
+        noches_num = pd.to_numeric(df_work["NOCHES"], errors="coerce").fillna(1).clip(lower=1)
+    else:
+        noches_num = pd.Series(1, index=df_work.index)
+    mask_salida_na = df_work["SALIDA"].isna() & df_work["LLEGADA"].notna()
+    if mask_salida_na.any():
+        df_work.loc[mask_salida_na, "SALIDA"] = (
+            df_work.loc[mask_salida_na, "LLEGADA"]
+            + pd.to_timedelta(noches_num[mask_salida_na], unit="D")
+        )
+
     df_work = df_work.dropna(subset=["LLEGADA", "SALIDA"])
     if df_work.empty:
         return pd.DataFrame()
