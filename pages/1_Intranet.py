@@ -1339,6 +1339,7 @@ def _normalizar_hotel_ocupacion(hotel):
 
     key = _strip_accents(txt).lower()
     alias = {
+        # Nombres extendidos
         "grand palladium colonial resort & spa": "Grand Palladium Colonial",
         "grand palladium punta cana resort & spa": "Grand Palladium Punta Cana",
         "grand palladium select bavaro": "Grand Palladium Bávaro",
@@ -1355,6 +1356,22 @@ def _normalizar_hotel_ocupacion(hotel):
         "family selection costa mujeres": "Family Selection Costa Mujeres",
         "family selection costa mujeres resort & spa": "Family Selection Costa Mujeres",
         "muje_cmu_fs": "Family Selection Costa Mujeres",
+        # Códigos del dataset sintético
+        "muje_cmu": "Grand Palladium Costa Mujeres Resort & Spa",
+        "muje_trs": "TRS Coral Hotel",
+        "muje_trsc": "TRS Coral Hotel",
+        "maya_kan": "Grand Palladium Kantenah",
+        "maya_col": "Grand Palladium Colonial",
+        "maya_whi": "Grand Palladium White Sand",
+        "maya_trs": "TRS Yucatan Hotel",
+        "maya_trsy": "TRS Yucatan Hotel",
+        "cana_bav": "Grand Palladium Bávaro",
+        "cana_pun": "Grand Palladium Punta Cana",
+        "cana_pc": "Grand Palladium Punta Cana",
+        "cana_pal": "Grand Palladium Palace",
+        "cana_trs": "TRS Turquesa Hotel",
+        "cana_trst": "TRS Turquesa Hotel",
+        "cana_cap": "TRS Cap Cana Waterfront*",
         "web_direct": "",
     }
     if key in alias:
@@ -1378,6 +1395,9 @@ def calcular_ocupacion_vectorizada(df, _dates):
 
     df_work = df.copy()
     df_work["HOTEL_CANON"] = df_work["NOMBRE_HOTEL_REAL"].apply(_normalizar_hotel_ocupacion)
+    if "HOTEL_COMPLEJO" in df_work.columns:
+        canon_code = df_work["HOTEL_COMPLEJO"].apply(_normalizar_hotel_ocupacion)
+        df_work["HOTEL_CANON"] = np.where(df_work["HOTEL_CANON"] == "", canon_code, df_work["HOTEL_CANON"])
     df_work = df_work[df_work["HOTEL_CANON"] != ""].copy()
 
     if df_work.empty:
@@ -1459,6 +1479,25 @@ def calcular_ocupacion_vectorizada(df, _dates):
     res['Ocupadas_Netas_Estimadas'] = res['Ocupadas_Brutas'] * 0.85
 
     return res
+
+
+@st.cache_data(show_spinner=False)
+def cargar_base_ocupacion_local(_maestro_mtime=0.0):
+    """
+    Fuente preferente para Control de Ocupación:
+    dataset sintético local completo (no hoja remota).
+    """
+    base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
+    if not os.path.exists(path_maestro):
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path_maestro, low_memory=False)
+        if "NOMBRE_HOTEL_REAL" not in df.columns and "HOTEL_COMPLEJO" in df.columns:
+            df = enriquecer_nombres_hoteles(df)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 def main():
     """
@@ -1577,9 +1616,16 @@ def main():
     # =========================================================================
     if selected_tab == "CONTROL DE OCUPACIÓN":
         st.subheader("Análisis de Ocupación y Overbooking Seguro")
-        
-        # Cargar datos desde MAESTRO
-        df_ocupacion = get_occupation_metrics(df_maestro)
+
+        # Fuente prioritaria: dataset sintético local (evita sesgo por sincronizaciones parciales en Sheets).
+        base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
+        df_ocup_src = cargar_base_ocupacion_local(_safe_mtime(path_maestro))
+        if df_ocup_src.empty:
+            df_ocup_src = df_maestro
+
+        # Cargar datos de ocupación desde la fuente elegida.
+        df_ocupacion = get_occupation_metrics(df_ocup_src)
         
         if df_ocupacion.empty:
             st.warning("No hay datos de ocupación disponibles.")
