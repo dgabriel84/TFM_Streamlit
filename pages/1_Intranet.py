@@ -734,6 +734,59 @@ def _normalizar_id_reserva(valor):
     return s
 
 
+def _reserva_desde_session(item, id_norm):
+    """
+    Convierte una reserva guardada en session_state al formato de intranet.
+    """
+    if not isinstance(item, dict):
+        return {}
+
+    rid = _normalizar_id_reserva(item.get("id", item.get("id_reserva", "")))
+    if rid != id_norm:
+        return {}
+
+    llegada_val = item.get("llegada", "")
+    if isinstance(llegada_val, (datetime.date, datetime.datetime)):
+        llegada_fmt = llegada_val.strftime("%d-%m-%Y")
+    else:
+        try:
+            llegada_fmt = pd.to_datetime(llegada_val, errors="coerce").strftime("%d-%m-%Y")
+        except Exception:
+            llegada_fmt = str(llegada_val or "")
+
+    prob_raw = pd.to_numeric(item.get("cancel_prob", item.get("prob_cancelacion", 0)), errors="coerce")
+    if pd.isna(prob_raw):
+        prob_raw = 0.0
+    prob_pct = float(prob_raw * 100.0) if 0.0 < float(prob_raw) <= 1.0 else float(prob_raw)
+
+    return {
+        "id": rid,
+        "id_reserva": rid,
+        "nombre": str(item.get("nombre", "Cliente")),
+        "cliente_nombre": str(item.get("nombre", "Cliente")),
+        "email": str(item.get("email", "")),
+        "cliente_email": str(item.get("email", "")),
+        "telefono": str(item.get("telefono", "")),
+        "telegram_chat": str(item.get("telegram_chat", "")).replace(".0", ""),
+        "hotel": item.get("hotel", "Hotel"),
+        "habitacion": item.get("habitacion", "Estándar"),
+        "llegada": llegada_fmt,
+        "noches": int(pd.to_numeric(item.get("noches", 1), errors="coerce") or 1),
+        "adultos": int(pd.to_numeric(item.get("adultos", item.get("pax", 2)), errors="coerce") or 2),
+        "ninos": int(pd.to_numeric(item.get("ninos", 0), errors="coerce") or 0),
+        "pax": int(pd.to_numeric(item.get("pax", 2), errors="coerce") or 2),
+        "valor": float(pd.to_numeric(item.get("valor", 0), errors="coerce") or 0.0),
+        "valor_total": float(pd.to_numeric(item.get("valor", 0), errors="coerce") or 0.0),
+        "cancel_prob": prob_pct,
+        "prob_cancelacion": prob_pct,
+        "estado": item.get("estado", "Confirmada"),
+        "oferta_retencion": item.get("oferta_retencion", ""),
+        "fecha_envio_oferta": item.get("fecha_envio_oferta", ""),
+        "estado_oferta": item.get("estado_oferta", ""),
+        "raw_data": {},
+    }
+
+
 def _persistir_campos_oferta_reserva(id_reserva, updates):
     """
     Persiste campos de oferta en ambos CSVs de reservas (web + histórico).
@@ -823,9 +876,14 @@ def _buscar_reserva_por_id_local(id_reserva):
     df["ID_RESERVA"] = df["ID_RESERVA"].apply(_normalizar_id_reserva)
     match = df[df["ID_RESERVA"] == id_norm]
     if match.empty:
+        # Fallback 1: reserva recién creada en la sesión de cliente (sin depender de CSV)
+        for item in reversed(st.session_state.get("reservations", [])):
+            res_session = _reserva_desde_session(item, id_norm)
+            if res_session:
+                return res_session
         return {}
 
-    row = match.iloc[0]
+    row = match.iloc[-1]
     prob_raw = pd.to_numeric(row.get("PROBABILIDAD_CANCELACION", 0), errors="coerce")
     if pd.isna(prob_raw):
         prob_raw = 0.0
@@ -1945,6 +2003,10 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                     st.session_state.intranet_search_result = found
                     if not found:
                         st.error("No se encontró ninguna reserva con ese código")
+                        st.caption(
+                            "Nota: en Streamlit Cloud, si la app se reinicia o se redeploya, "
+                            "las reservas guardadas en CSV local pueden no persistir."
+                        )
                 else:
                     st.warning("Introduce un código de reserva")
             
