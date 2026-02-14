@@ -1058,6 +1058,41 @@ def guardar_reserva_csv(reserva: dict) -> bool:
     Preserva todos los datos del cliente y estructura enriquecida.
     """
     try:
+        def _to_float_safe(value, default=0.0):
+            if value is None:
+                return float(default)
+            if isinstance(value, (int, float, np.number)):
+                try:
+                    return float(value)
+                except Exception:
+                    return float(default)
+            s = str(value).strip().replace("€", "").replace(" ", "")
+            if not s or s.lower() in {"nan", "none"}:
+                return float(default)
+            if "," in s and "." in s:
+                if s.rfind(",") > s.rfind("."):
+                    s = s.replace(".", "").replace(",", ".")
+                else:
+                    s = s.replace(",", "")
+            elif "," in s:
+                s = s.replace(".", "").replace(",", ".")
+            elif s.count(".") > 1:
+                s = s.replace(".", "")
+            try:
+                return float(s)
+            except Exception:
+                return float(default)
+
+        def _to_prob01_safe(value, default=0.0):
+            s = str(value).strip().replace("%", "").replace(",", ".")
+            try:
+                v = float(s)
+            except Exception:
+                return float(default)
+            if v > 1.0:
+                v = v / 100.0
+            return max(0.0, min(1.0, v))
+
         # Calcular fechas
         llegada_dt = pd.to_datetime(reserva.get('llegada'))
         # Asegurar noches int
@@ -1074,14 +1109,14 @@ def guardar_reserva_csv(reserva: dict) -> bool:
             'SALIDA': salida_dt.strftime('%Y-%m-%d'),
             'NOCHES': noches,
             'PAX': reserva.get('pax', 0),
-            'VALOR_RESERVA': reserva.get('valor', 0),
+            'VALOR_RESERVA': _to_float_safe(reserva.get('valor', 0), 0.0),
             'NOMBRE_HABITACION': reserva.get('habitacion', ''),
             'CANAL': 'WEBPROPIA',
             'MERCADO': reserva.get('pais', 'Directo'),
             'AGENCIA': 'Cliente Directo',
             'NOMBRE_HOTEL_REAL': reserva.get('hotel', ''),
             'COMPLEJO_REAL': reserva.get('complejo', ''),
-            'PROBABILIDAD_CANCELACION': reserva.get('cancel_prob', 0),
+            'PROBABILIDAD_CANCELACION': _to_prob01_safe(reserva.get('cancel_prob', 0), 0.0),
             'HOTEL_COMPLEJO': 'WEB_DIRECT', 
             # Campos NUEVOS ricos (Solo en archivo web)
             'CLIENTE_NOMBRE': reserva.get('nombre', ''),

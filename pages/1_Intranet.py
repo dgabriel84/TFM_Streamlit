@@ -756,6 +756,56 @@ def _normalizar_id_reserva(valor):
     return s
 
 
+def _to_float_safe(value, default=0.0):
+    """Convierte importes con formato ES/EN a float de forma robusta."""
+    if value is None:
+        return float(default)
+    if isinstance(value, (int, float, np.number)):
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+    s = str(value).strip()
+    if not s or s.lower() in {"nan", "none"}:
+        return float(default)
+    s = s.replace("€", "").replace(" ", "")
+
+    # Caso mixto, decidir separador decimal por posición final.
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    # Solo coma: tratar coma como decimal.
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    # Solo puntos múltiples: asumir miles.
+    elif s.count(".") > 1:
+        s = s.replace(".", "")
+
+    try:
+        return float(s)
+    except Exception:
+        return float(default)
+
+
+def _to_prob01_safe(value, default=0.0):
+    """Convierte probabilidad a escala 0..1 admitiendo 0..100 y coma decimal."""
+    if value is None:
+        return float(default)
+    s = str(value).strip().replace("%", "")
+    if not s:
+        return float(default)
+    s = s.replace(",", ".")
+    try:
+        v = float(s)
+    except Exception:
+        return float(default)
+    if v > 1.0:
+        v = v / 100.0
+    return max(0.0, min(1.0, v))
+
+
 def _reserva_desde_session(item, id_norm):
     """
     Convierte una reserva guardada en session_state al formato de intranet.
@@ -926,10 +976,8 @@ def _buscar_reserva_por_id_local(id_reserva):
         return {}
 
     row = match.iloc[-1]
-    prob_raw = pd.to_numeric(row.get("PROBABILIDAD_CANCELACION", 0), errors="coerce")
-    if pd.isna(prob_raw):
-        prob_raw = 0.0
-    prob_pct = float(prob_raw * 100.0) if 0.0 < float(prob_raw) <= 1.0 else float(prob_raw)
+    prob_01 = _to_prob01_safe(row.get("PROBABILIDAD_CANCELACION", 0), default=0.0)
+    prob_pct = float(prob_01 * 100.0)
 
     llegada_val = row.get("LLEGADA")
     if pd.notna(llegada_val):
@@ -2106,7 +2154,7 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
 
                     hotel_val = raw_data.get("COMPLEJO_REAL", "Complejo Punta Cana")
                     hab_val = raw_data.get("NOMBRE_HABITACION", "Standard")
-                    valor_val = raw_data.get("VALOR_RESERVA", 0.0)
+                    valor_val = _to_float_safe(raw_data.get("VALOR_RESERVA", 0.0), default=0.0)
 
                     if pd.notna(llegada_val):
                         processed_df = get_features(
@@ -2122,7 +2170,7 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                             FUENTE_NEGOCIO=fuente_val,
                             NOMBRE_HOTEL=hotel_val,
                             NOMBRE_HABITACION=hab_val,
-                            VALOR_RESERVA=float(valor_val) if valor_val is not None else 0.0,
+                            VALOR_RESERVA=valor_val,
                         )
                         st.session_state.last_manual_pred_features = processed_df.copy()
                         st.session_state.last_manual_pred_label = f"Reserva {r_id_tmp}"
