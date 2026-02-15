@@ -29,6 +29,13 @@ import sys
 import os
 import numpy as np
 import random
+from google_sheets_store import (
+    SHEET_RESERVAS_WEB,
+    read_sheet_df,
+    sheets_enabled,
+    upsert_sheet_row,
+    write_sheet_df,
+)
 
 # -----------------------------------------------------------------------------
 # CONFIGURACION DE RUTAS
@@ -1021,6 +1028,80 @@ def _normalizar_reservas_web_csv() -> pd.DataFrame:
         df_web["ID_RESERVA"] = ids
         # Si existen duplicados por ID, se conserva la última reserva.
         df_web = df_web.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+
+    def _to_float_safe(value, default=0.0):
+        if value is None:
+            return float(default)
+        if isinstance(value, (int, float, np.number)):
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+        s = str(value).strip().replace("€", "").replace(" ", "")
+        if not s or s.lower() in {"nan", "none"}:
+            return float(default)
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif s.count(".") > 1:
+            s = s.replace(".", "")
+        try:
+            return float(s)
+        except Exception:
+            return float(default)
+
+    def _to_prob01_safe(value, default=0.0):
+        s = str(value).strip().replace("%", "").replace(" ", "")
+        if not s or s.lower() in {"nan", "none"}:
+            return float(default)
+        if "," not in s and s.count(".") > 1:
+            parts = s.split(".")
+            if all(p.isdigit() for p in parts):
+                s = "0." + "".join(parts)
+        s = s.replace(",", ".")
+        try:
+            v = float(s)
+        except Exception:
+            return float(default)
+        if v > 1.0:
+            v = v / 100.0
+        return max(0.0, min(1.0, v))
+
+    # Si Google Sheets está habilitado, usamos la hoja como fuente principal de reservas web.
+    if sheets_enabled():
+        try:
+            df_sheet = read_sheet_df(SHEET_RESERVAS_WEB, headers=COLUMNAS_WEB_FIJAS)
+            if df_sheet.empty:
+                # Primera carga: sembrar la hoja con lo que exista en local.
+                if not df_web.empty:
+                    write_sheet_df(SHEET_RESERVAS_WEB, df_web, headers=COLUMNAS_WEB_FIJAS)
+            else:
+                df_sheet["ID_RESERVA"] = (
+                    df_sheet["ID_RESERVA"]
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(r"\.0$", "", regex=True)
+                )
+                df_web = df_sheet.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+        except Exception:
+            # Fallback silencioso a local para no romper flujo de reservas.
+            pass
+
+    # Saneo final: deja el CSV en tipos compatibles.
+    if not df_web.empty:
+        if "PROBABILIDAD_CANCELACION" in df_web.columns:
+            df_web["PROBABILIDAD_CANCELACION"] = df_web["PROBABILIDAD_CANCELACION"].apply(
+                lambda x: _to_prob01_safe(x, default=0.0)
+            )
+        if "VALOR_RESERVA" in df_web.columns:
+            df_web["VALOR_RESERVA"] = df_web["VALOR_RESERVA"].apply(
+                lambda x: _to_float_safe(x, default=0.0)
+            )
+
     df_web.to_csv(RESERVAS_WEB_PATH, index=False)
     return df_web
 
@@ -1030,6 +1111,46 @@ def guardar_reserva_csv(reserva: dict) -> bool:
     Preserva todos los datos del cliente y estructura enriquecida.
     """
     try:
+        def _to_float_safe(value, default=0.0):
+            if value is None:
+                return float(default)
+            if isinstance(value, (int, float, np.number)):
+                try:
+                    return float(value)
+                except Exception:
+                    return float(default)
+            s = str(value).strip().replace("€", "").replace(" ", "")
+            if not s or s.lower() in {"nan", "none"}:
+                return float(default)
+            if "," in s and "." in s:
+                if s.rfind(",") > s.rfind("."):
+                    s = s.replace(".", "").replace(",", ".")
+                else:
+                    s = s.replace(",", "")
+            elif "," in s:
+                s = s.replace(".", "").replace(",", ".")
+            elif s.count(".") > 1:
+                s = s.replace(".", "")
+            try:
+                return float(s)
+            except Exception:
+                return float(default)
+
+        def _to_prob01_safe(value, default=0.0):
+            s = str(value).strip().replace("%", "").replace(" ", "")
+            if "," not in s and s.count(".") > 1:
+                parts = s.split(".")
+                if all(p.isdigit() for p in parts):
+                    s = "0." + "".join(parts)
+            s = s.replace(",", ".")
+            try:
+                v = float(s)
+            except Exception:
+                return float(default)
+            if v > 1.0:
+                v = v / 100.0
+            return max(0.0, min(1.0, v))
+
         # Calcular fechas
         llegada_dt = pd.to_datetime(reserva.get('llegada'))
         # Asegurar noches int
@@ -1046,14 +1167,14 @@ def guardar_reserva_csv(reserva: dict) -> bool:
             'SALIDA': salida_dt.strftime('%Y-%m-%d'),
             'NOCHES': noches,
             'PAX': reserva.get('pax', 0),
-            'VALOR_RESERVA': reserva.get('valor', 0),
+            'VALOR_RESERVA': _to_float_safe(reserva.get('valor', 0), 0.0),
             'NOMBRE_HABITACION': reserva.get('habitacion', ''),
             'CANAL': 'WEBPROPIA',
             'MERCADO': reserva.get('pais', 'Directo'),
             'AGENCIA': 'Cliente Directo',
             'NOMBRE_HOTEL_REAL': reserva.get('hotel', ''),
             'COMPLEJO_REAL': reserva.get('complejo', ''),
-            'PROBABILIDAD_CANCELACION': reserva.get('cancel_prob', 0),
+            'PROBABILIDAD_CANCELACION': _to_prob01_safe(reserva.get('cancel_prob', 0), 0.0),
             'HOTEL_COMPLEJO': 'WEB_DIRECT', 
             # Campos NUEVOS ricos (Solo en archivo web)
             'CLIENTE_NOMBRE': reserva.get('nombre', ''),
@@ -1091,6 +1212,19 @@ def guardar_reserva_csv(reserva: dict) -> bool:
             )
             df_out = df_out.drop_duplicates(subset=["ID_RESERVA"], keep="last")
         df_out.to_csv(RESERVAS_WEB_PATH, index=False)
+
+        # Persistencia remota opcional en Google Sheets (upsert por ID).
+        if sheets_enabled():
+            try:
+                upsert_sheet_row(
+                    SHEET_RESERVAS_WEB,
+                    row_data,
+                    key_col="ID_RESERVA",
+                    headers=COLUMNAS_WEB_FIJAS,
+                )
+            except Exception:
+                # No bloqueamos la reserva si falla la sincronización remota.
+                pass
             
         return True
     except Exception as e:

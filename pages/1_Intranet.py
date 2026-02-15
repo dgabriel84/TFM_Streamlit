@@ -24,6 +24,14 @@ import html
 import unicodedata
 import requests
 import csv
+from google_sheets_store import (
+    SHEET_RESERVAS_WEB,
+    SHEET_RESERVAS_HIST,
+    read_sheet_df,
+    sheets_enabled,
+    update_sheet_fields_by_id,
+    write_sheet_df,
+)
 
 # -----------------------------------------------------------------------------
 # CONFIGURACION DE RUTAS
@@ -709,7 +717,29 @@ def _normalizar_reservas_web_intranet(csv_path):
     df = _leer_reservas_web_robusto(csv_path)
     if not df.empty and "ID_RESERVA" in df.columns:
         df = df.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+
+    # Si Google Sheets está activo, la hoja de reservas web pasa a ser la fuente principal.
+    if sheets_enabled():
+        try:
+            df_sheet = read_sheet_df(SHEET_RESERVAS_WEB, headers=WEB_COLS_ACTUAL)
+            if df_sheet.empty:
+                if not df.empty:
+                    write_sheet_df(SHEET_RESERVAS_WEB, df, headers=WEB_COLS_ACTUAL)
+            else:
+                df_sheet["ID_RESERVA"] = df_sheet["ID_RESERVA"].apply(_normalizar_id_reserva)
+                df = df_sheet.drop_duplicates(subset=["ID_RESERVA"], keep="last")
+        except Exception:
+            pass
+
     if os.path.exists(csv_path) or not df.empty:
+        if "PROBABILIDAD_CANCELACION" in df.columns:
+            df["PROBABILIDAD_CANCELACION"] = df["PROBABILIDAD_CANCELACION"].apply(
+                lambda x: _to_prob01_safe(x, default=0.0)
+            )
+        if "VALOR_RESERVA" in df.columns:
+            df["VALOR_RESERVA"] = df["VALOR_RESERVA"].apply(
+                lambda x: _to_float_safe(x, default=0.0)
+            )
         df.to_csv(csv_path, index=False)
     return df
 
@@ -732,6 +762,65 @@ def _normalizar_id_reserva(valor):
     except Exception:
         pass
     return s
+
+
+def _to_float_safe(value, default=0.0):
+    """Convierte importes con formato ES/EN a float de forma robusta."""
+    if value is None:
+        return float(default)
+    if isinstance(value, (int, float, np.number)):
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+    s = str(value).strip()
+    if not s or s.lower() in {"nan", "none"}:
+        return float(default)
+    s = s.replace("€", "").replace(" ", "")
+
+    # Caso mixto, decidir separador decimal por posición final.
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    # Solo coma: tratar coma como decimal.
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    # Solo puntos múltiples: asumir miles.
+    elif s.count(".") > 1:
+        s = s.replace(".", "")
+
+    try:
+        return float(s)
+    except Exception:
+        return float(default)
+
+
+def _to_prob01_safe(value, default=0.0):
+    """Convierte probabilidad a escala 0..1 admitiendo 0..100 y coma decimal."""
+    if value is None:
+        return float(default)
+    s = str(value).strip().replace("%", "")
+    if not s:
+        return float(default)
+    s = s.replace(" ", "")
+
+    # Caso de locale roto en Sheets (ej: '2.122.059.943.401.390' para 0.212205994340139)
+    if "," not in s and s.count(".") > 1:
+        parts = s.split(".")
+        if all(p.isdigit() for p in parts):
+            # En probabilidad, múltiples puntos suelen ser decimal mal interpretado.
+            s = "0." + "".join(parts)
+
+    s = s.replace(",", ".")
+    try:
+        v = float(s)
+    except Exception:
+        return float(default)
+    if v > 1.0:
+        v = v / 100.0
+    return max(0.0, min(1.0, v))
 
 
 def _reserva_desde_session(item, id_norm):
@@ -824,6 +913,26 @@ def _persistir_campos_oferta_reserva(id_reserva, updates):
 
             df.to_csv(csv_path, index=False)
             updated_any = True
+            if sheets_enabled() and csv_path.endswith("reservas_web_2026.csv"):
+                try:
+                    update_sheet_fields_by_id(
+                        SHEET_RESERVAS_WEB,
+                        id_norm,
+                        updates,
+                        key_col="ID_RESERVA",
+                    )
+                except Exception:
+                    pass
+            if sheets_enabled() and csv_path.endswith("reservas_2026_full.csv"):
+                try:
+                    update_sheet_fields_by_id(
+                        SHEET_RESERVAS_HIST,
+                        id_norm,
+                        updates,
+                        key_col="ID_RESERVA",
+                    )
+                except Exception:
+                    pass
         except Exception:
             continue
 
@@ -884,10 +993,8 @@ def _buscar_reserva_por_id_local(id_reserva):
         return {}
 
     row = match.iloc[-1]
-    prob_raw = pd.to_numeric(row.get("PROBABILIDAD_CANCELACION", 0), errors="coerce")
-    if pd.isna(prob_raw):
-        prob_raw = 0.0
-    prob_pct = float(prob_raw * 100.0) if 0.0 < float(prob_raw) <= 1.0 else float(prob_raw)
+    prob_01 = _to_prob01_safe(row.get("PROBABILIDAD_CANCELACION", 0), default=0.0)
+    prob_pct = float(prob_01 * 100.0)
 
     llegada_val = row.get("LLEGADA")
     if pd.notna(llegada_val):
@@ -1065,6 +1172,14 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
         # Optimización: Cargar solo columnas necesarias si es muy pesado para visualización
         # Pero para gestión necesitamos detalle. Leemos con tipos optimizados.
         df = pd.read_csv(path_maestro)
+        if sheets_enabled():
+            try:
+                df_hist_sheet = read_sheet_df(SHEET_RESERVAS_HIST, headers=None)
+                if df_hist_sheet.empty:
+                    # Semilla inicial del dataset sintético en la hoja histórica.
+                    write_sheet_df(SHEET_RESERVAS_HIST, df, headers=list(df.columns))
+            except Exception:
+                pass
         df['LLEGADA'] = pd.to_datetime(df['LLEGADA'])
         df['SALIDA'] = pd.to_datetime(df['SALIDA'])
         
@@ -1086,6 +1201,21 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
         # Mapeo rápido de nombres si no existen
         if 'NOMBRE_HOTEL_REAL' not in df.columns:
             df = enriquecer_nombres_hoteles(df)
+
+        # Normalización de tipos (evita incompatibilidades CSV/Sheets en toda la intranet).
+        if "PROBABILIDAD_CANCELACION" in df.columns:
+            df["PROBABILIDAD_CANCELACION"] = df["PROBABILIDAD_CANCELACION"].apply(
+                lambda x: _to_prob01_safe(x, default=np.nan)
+            )
+        if "VALOR_RESERVA" in df.columns:
+            df["VALOR_RESERVA"] = df["VALOR_RESERVA"].apply(
+                lambda x: _to_float_safe(x, default=np.nan)
+            )
+        if "NOCHES" in df.columns:
+            df["NOCHES"] = pd.to_numeric(df["NOCHES"], errors="coerce")
+        if "PAX" in df.columns:
+            df["PAX"] = pd.to_numeric(df["PAX"], errors="coerce")
+
         return df
 
     # Si no existe, generarlo desde histórico (PROCESO INIT)
@@ -1239,6 +1369,7 @@ def _normalizar_hotel_ocupacion(hotel):
 
     key = _strip_accents(txt).lower()
     alias = {
+        # Nombres extendidos
         "grand palladium colonial resort & spa": "Grand Palladium Colonial",
         "grand palladium punta cana resort & spa": "Grand Palladium Punta Cana",
         "grand palladium select bavaro": "Grand Palladium Bávaro",
@@ -1255,6 +1386,22 @@ def _normalizar_hotel_ocupacion(hotel):
         "family selection costa mujeres": "Family Selection Costa Mujeres",
         "family selection costa mujeres resort & spa": "Family Selection Costa Mujeres",
         "muje_cmu_fs": "Family Selection Costa Mujeres",
+        # Códigos del dataset sintético
+        "muje_cmu": "Grand Palladium Costa Mujeres Resort & Spa",
+        "muje_trs": "TRS Coral Hotel",
+        "muje_trsc": "TRS Coral Hotel",
+        "maya_kan": "Grand Palladium Kantenah",
+        "maya_col": "Grand Palladium Colonial",
+        "maya_whi": "Grand Palladium White Sand",
+        "maya_trs": "TRS Yucatan Hotel",
+        "maya_trsy": "TRS Yucatan Hotel",
+        "cana_bav": "Grand Palladium Bávaro",
+        "cana_pun": "Grand Palladium Punta Cana",
+        "cana_pc": "Grand Palladium Punta Cana",
+        "cana_pal": "Grand Palladium Palace",
+        "cana_trs": "TRS Turquesa Hotel",
+        "cana_trst": "TRS Turquesa Hotel",
+        "cana_cap": "TRS Cap Cana Waterfront*",
         "web_direct": "",
     }
     if key in alias:
@@ -1278,15 +1425,45 @@ def calcular_ocupacion_vectorizada(df, _dates):
 
     df_work = df.copy()
     df_work["HOTEL_CANON"] = df_work["NOMBRE_HOTEL_REAL"].apply(_normalizar_hotel_ocupacion)
+    if "HOTEL_COMPLEJO" in df_work.columns:
+        canon_code = df_work["HOTEL_COMPLEJO"].apply(_normalizar_hotel_ocupacion)
+        df_work["HOTEL_CANON"] = np.where(df_work["HOTEL_CANON"] == "", canon_code, df_work["HOTEL_CANON"])
     df_work = df_work[df_work["HOTEL_CANON"] != ""].copy()
 
     if df_work.empty:
         return pd.DataFrame()
 
-    if "LLEGADA" not in df_work.columns or "SALIDA" not in df_work.columns:
+    if "LLEGADA" not in df_work.columns:
         return pd.DataFrame()
-    df_work["LLEGADA"] = pd.to_datetime(df_work["LLEGADA"], errors="coerce")
-    df_work["SALIDA"] = pd.to_datetime(df_work["SALIDA"], errors="coerce")
+
+    def _parse_dates_robusta(series):
+        # Primer pase: formato internacional (YYYY-MM-DD)
+        dt = pd.to_datetime(series, errors="coerce")
+        # Segundo pase para nulos: formato europeo (DD-MM-YYYY / DD/MM/YYYY)
+        mask = dt.isna()
+        if mask.any():
+            dt2 = pd.to_datetime(series[mask], errors="coerce", dayfirst=True)
+            dt.loc[mask] = dt2
+        return dt
+
+    df_work["LLEGADA"] = _parse_dates_robusta(df_work["LLEGADA"])
+    if "SALIDA" in df_work.columns:
+        df_work["SALIDA"] = _parse_dates_robusta(df_work["SALIDA"])
+    else:
+        df_work["SALIDA"] = pd.NaT
+
+    # Si no hay SALIDA válida, la reconstruimos con NOCHES (fallback robusto).
+    if "NOCHES" in df_work.columns:
+        noches_num = pd.to_numeric(df_work["NOCHES"], errors="coerce").fillna(1).clip(lower=1)
+    else:
+        noches_num = pd.Series(1, index=df_work.index)
+    mask_salida_na = df_work["SALIDA"].isna() & df_work["LLEGADA"].notna()
+    if mask_salida_na.any():
+        df_work.loc[mask_salida_na, "SALIDA"] = (
+            df_work.loc[mask_salida_na, "LLEGADA"]
+            + pd.to_timedelta(noches_num[mask_salida_na], unit="D")
+        )
+
     df_work = df_work.dropna(subset=["LLEGADA", "SALIDA"])
     if df_work.empty:
         return pd.DataFrame()
@@ -1332,6 +1509,25 @@ def calcular_ocupacion_vectorizada(df, _dates):
     res['Ocupadas_Netas_Estimadas'] = res['Ocupadas_Brutas'] * 0.85
 
     return res
+
+
+@st.cache_data(show_spinner=False)
+def cargar_base_ocupacion_local(_maestro_mtime=0.0):
+    """
+    Fuente preferente para Control de Ocupación:
+    dataset sintético local completo (no hoja remota).
+    """
+    base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
+    if not os.path.exists(path_maestro):
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path_maestro, low_memory=False)
+        if "NOMBRE_HOTEL_REAL" not in df.columns and "HOTEL_COMPLEJO" in df.columns:
+            df = enriquecer_nombres_hoteles(df)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 def main():
     """
@@ -1450,9 +1646,16 @@ def main():
     # =========================================================================
     if selected_tab == "CONTROL DE OCUPACIÓN":
         st.subheader("Análisis de Ocupación y Overbooking Seguro")
-        
-        # Cargar datos desde MAESTRO
-        df_ocupacion = get_occupation_metrics(df_maestro)
+
+        # Fuente prioritaria: dataset sintético local (evita sesgo por sincronizaciones parciales en Sheets).
+        base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
+        df_ocup_src = cargar_base_ocupacion_local(_safe_mtime(path_maestro))
+        if df_ocup_src.empty:
+            df_ocup_src = df_maestro
+
+        # Cargar datos de ocupación desde la fuente elegida.
+        df_ocupacion = get_occupation_metrics(df_ocup_src)
         
         if df_ocupacion.empty:
             st.warning("No hay datos de ocupación disponibles.")
@@ -1830,11 +2033,11 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
             # Vamos a trabajar con el maestro directo
             
             df_view = df_maestro.copy()
-            df_view["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
-                df_view.get("PROBABILIDAD_CANCELACION", 0), errors="coerce"
+            df_view["PROBABILIDAD_CANCELACION"] = df_view.get("PROBABILIDAD_CANCELACION", 0).apply(
+                lambda x: _to_prob01_safe(x, default=np.nan)
             )
-            df_view["VALOR_RESERVA"] = pd.to_numeric(
-                df_view.get("VALOR_RESERVA", 0), errors="coerce"
+            df_view["VALOR_RESERVA"] = df_view.get("VALOR_RESERVA", 0).apply(
+                lambda x: _to_float_safe(x, default=np.nan)
             )
             df_view["LLEGADA"] = pd.to_datetime(df_view.get("LLEGADA"), errors="coerce")
             
@@ -2054,7 +2257,7 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
 
                     hotel_val = raw_data.get("COMPLEJO_REAL", "Complejo Punta Cana")
                     hab_val = raw_data.get("NOMBRE_HABITACION", "Standard")
-                    valor_val = raw_data.get("VALOR_RESERVA", 0.0)
+                    valor_val = _to_float_safe(raw_data.get("VALOR_RESERVA", 0.0), default=0.0)
 
                     if pd.notna(llegada_val):
                         processed_df = get_features(
@@ -2070,10 +2273,41 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
                             FUENTE_NEGOCIO=fuente_val,
                             NOMBRE_HOTEL=hotel_val,
                             NOMBRE_HABITACION=hab_val,
-                            VALOR_RESERVA=float(valor_val) if valor_val is not None else 0.0,
+                            VALOR_RESERVA=valor_val,
                         )
                         st.session_state.last_manual_pred_features = processed_df.copy()
                         st.session_state.last_manual_pred_label = f"Reserva {r_id_tmp}"
+
+                        # Si la reserva viene sin probabilidad (o a 0 por error de guardado),
+                        # la recalculamos aquí y la persistimos.
+                        try:
+                            prob_actual = pd.to_numeric(
+                                reserva.get("cancel_prob", reserva.get("prob_cancelacion", 0)),
+                                errors="coerce",
+                            )
+                            if pd.isna(prob_actual):
+                                prob_actual = 0.0
+                            if float(prob_actual) > 1.0:
+                                prob_actual = float(prob_actual) / 100.0
+
+                            if float(prob_actual) <= 0.0 and model is not None:
+                                pred_features = processed_df
+                                if hasattr(model, "feature_name_"):
+                                    faltantes = [c for c in model.feature_name_ if c not in pred_features.columns]
+                                    for c in faltantes:
+                                        pred_features[c] = 0
+                                    pred_features = pred_features[model.feature_name_]
+
+                                pred_prob = float(model.predict_proba(pred_features)[0][1])
+                                pred_prob = max(0.0, min(1.0, pred_prob))
+                                reserva["cancel_prob"] = pred_prob
+                                reserva["prob_cancelacion"] = pred_prob * 100.0
+                                st.session_state.intranet_search_result = reserva
+
+                                updates_prob = {"PROBABILIDAD_CANCELACION": pred_prob}
+                                _persistir_campos_oferta_reserva(str(r_id_tmp), updates_prob)
+                        except Exception:
+                            pass
 
                         # Generar SHAP para la reserva buscada.
                         shap_ok, shap_err = _generar_waterfall_shap_desde_features(
@@ -2589,8 +2823,8 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                         df_tmp = df_tmp[df_tmp["LLEGADA"].dt.month == m]
                     df_tmp = df_tmp[df_tmp["LLEGADA"].dt.year == y]
 
-                    df_tmp["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
-                        df_tmp.get("PROBABILIDAD_CANCELACION"), errors="coerce"
+                    df_tmp["PROBABILIDAD_CANCELACION"] = df_tmp.get("PROBABILIDAD_CANCELACION").apply(
+                        lambda x: _to_prob01_safe(x, default=np.nan)
                     )
                     df_tmp = df_tmp.dropna(subset=["PROBABILIDAD_CANCELACION"])
 
@@ -2634,8 +2868,8 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                     df_tmp["LLEGADA"] = pd.to_datetime(df_tmp.get("LLEGADA"), errors="coerce")
                     revenue = pd.to_numeric(df_tmp.get("VALOR_RESERVA"), errors="coerce").fillna(0).sum()
                     pax = pd.to_numeric(df_tmp.get("PAX"), errors="coerce").fillna(0).sum()
-                    avg_prob = pd.to_numeric(df_tmp.get("PROBABILIDAD_CANCELACION"), errors="coerce").mean()
-                    high_risk = pd.to_numeric(df_tmp.get("PROBABILIDAD_CANCELACION"), errors="coerce").ge(0.6).sum()
+                    avg_prob = df_tmp.get("PROBABILIDAD_CANCELACION").apply(lambda x: _to_prob01_safe(x, default=np.nan)).mean()
+                    high_risk = df_tmp.get("PROBABILIDAD_CANCELACION").apply(lambda x: _to_prob01_safe(x, default=np.nan)).ge(0.6).sum()
 
                     info = (
                         "📈 **Resumen General 2026**\n\n"
@@ -2765,8 +2999,8 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                             pass
 
                     if "PROBABILIDAD_CANCELACION" in df_tmp.columns:
-                        df_tmp["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
-                            df_tmp["PROBABILIDAD_CANCELACION"], errors="coerce"
+                        df_tmp["PROBABILIDAD_CANCELACION"] = df_tmp["PROBABILIDAD_CANCELACION"].apply(
+                            lambda x: _to_prob01_safe(x, default=np.nan)
                         )
                         if riesgo_min is not None:
                             df_tmp = df_tmp[df_tmp["PROBABILIDAD_CANCELACION"] >= riesgo_min]
@@ -2774,7 +3008,9 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                             df_tmp = df_tmp[df_tmp["PROBABILIDAD_CANCELACION"] <= riesgo_max]
 
                     if "VALOR_RESERVA" in df_tmp.columns:
-                        df_tmp["VALOR_RESERVA"] = pd.to_numeric(df_tmp["VALOR_RESERVA"], errors="coerce")
+                        df_tmp["VALOR_RESERVA"] = df_tmp["VALOR_RESERVA"].apply(
+                            lambda x: _to_float_safe(x, default=np.nan)
+                        )
                         if valor_min is not None:
                             df_tmp = df_tmp[df_tmp["VALOR_RESERVA"] >= valor_min]
                         if valor_max is not None:
