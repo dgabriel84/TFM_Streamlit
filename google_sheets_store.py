@@ -163,7 +163,8 @@ def write_sheet_df(sheet_name: str, df: pd.DataFrame, headers: Optional[List[str
     rows = target.fillna("").astype(str).values.tolist()
     chunk = 500
     for i in range(0, len(rows), chunk):
-        ws.append_rows(rows[i : i + chunk], value_input_option="USER_ENTERED")
+        # RAW evita conversiones de locale (p. ej. 0.212 -> 2.122.000...)
+        ws.append_rows(rows[i : i + chunk], value_input_option="RAW")
     return True
 
 
@@ -200,9 +201,9 @@ def upsert_sheet_row(
 
     out_row = [str(row.get(c, "")) for c in headers]
     if row_idx is None:
-        ws.append_row(out_row, value_input_option="USER_ENTERED")
+        ws.append_row(out_row, value_input_option="RAW")
     else:
-        ws.update(f"A{row_idx}", [out_row])
+        ws.update(f"A{row_idx}", [out_row], value_input_option="RAW")
     return True
 
 
@@ -245,5 +246,5 @@ def update_sheet_fields_by_id(
     for k, v in updates.items():
         if k in headers:
             current[headers.index(k)] = "" if v is None else str(v)
-    ws.update(f"A{target_row}", [current])
+    ws.update(f"A{target_row}", [current], value_input_option="RAW")
     return True

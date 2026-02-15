@@ -732,6 +732,14 @@ def _normalizar_reservas_web_intranet(csv_path):
             pass
 
     if os.path.exists(csv_path) or not df.empty:
+        if "PROBABILIDAD_CANCELACION" in df.columns:
+            df["PROBABILIDAD_CANCELACION"] = df["PROBABILIDAD_CANCELACION"].apply(
+                lambda x: _to_prob01_safe(x, default=0.0)
+            )
+        if "VALOR_RESERVA" in df.columns:
+            df["VALOR_RESERVA"] = df["VALOR_RESERVA"].apply(
+                lambda x: _to_float_safe(x, default=0.0)
+            )
         df.to_csv(csv_path, index=False)
     return df
 
@@ -796,6 +804,15 @@ def _to_prob01_safe(value, default=0.0):
     s = str(value).strip().replace("%", "")
     if not s:
         return float(default)
+    s = s.replace(" ", "")
+
+    # Caso de locale roto en Sheets (ej: '2.122.059.943.401.390' para 0.212205994340139)
+    if "," not in s and s.count(".") > 1:
+        parts = s.split(".")
+        if all(p.isdigit() for p in parts):
+            # En probabilidad, múltiples puntos suelen ser decimal mal interpretado.
+            s = "0." + "".join(parts)
+
     s = s.replace(",", ".")
     try:
         v = float(s)
@@ -1161,8 +1178,6 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
                 if df_hist_sheet.empty:
                     # Semilla inicial del dataset sintético en la hoja histórica.
                     write_sheet_df(SHEET_RESERVAS_HIST, df, headers=list(df.columns))
-                else:
-                    df = df_hist_sheet
             except Exception:
                 pass
         df['LLEGADA'] = pd.to_datetime(df['LLEGADA'])
@@ -1186,6 +1201,21 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
         # Mapeo rápido de nombres si no existen
         if 'NOMBRE_HOTEL_REAL' not in df.columns:
             df = enriquecer_nombres_hoteles(df)
+
+        # Normalización de tipos (evita incompatibilidades CSV/Sheets en toda la intranet).
+        if "PROBABILIDAD_CANCELACION" in df.columns:
+            df["PROBABILIDAD_CANCELACION"] = df["PROBABILIDAD_CANCELACION"].apply(
+                lambda x: _to_prob01_safe(x, default=np.nan)
+            )
+        if "VALOR_RESERVA" in df.columns:
+            df["VALOR_RESERVA"] = df["VALOR_RESERVA"].apply(
+                lambda x: _to_float_safe(x, default=np.nan)
+            )
+        if "NOCHES" in df.columns:
+            df["NOCHES"] = pd.to_numeric(df["NOCHES"], errors="coerce")
+        if "PAX" in df.columns:
+            df["PAX"] = pd.to_numeric(df["PAX"], errors="coerce")
+
         return df
 
     # Si no existe, generarlo desde histórico (PROCESO INIT)
@@ -2003,11 +2033,11 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
             # Vamos a trabajar con el maestro directo
             
             df_view = df_maestro.copy()
-            df_view["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
-                df_view.get("PROBABILIDAD_CANCELACION", 0), errors="coerce"
+            df_view["PROBABILIDAD_CANCELACION"] = df_view.get("PROBABILIDAD_CANCELACION", 0).apply(
+                lambda x: _to_prob01_safe(x, default=np.nan)
             )
-            df_view["VALOR_RESERVA"] = pd.to_numeric(
-                df_view.get("VALOR_RESERVA", 0), errors="coerce"
+            df_view["VALOR_RESERVA"] = df_view.get("VALOR_RESERVA", 0).apply(
+                lambda x: _to_float_safe(x, default=np.nan)
             )
             df_view["LLEGADA"] = pd.to_datetime(df_view.get("LLEGADA"), errors="coerce")
             
@@ -2793,8 +2823,8 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                         df_tmp = df_tmp[df_tmp["LLEGADA"].dt.month == m]
                     df_tmp = df_tmp[df_tmp["LLEGADA"].dt.year == y]
 
-                    df_tmp["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
-                        df_tmp.get("PROBABILIDAD_CANCELACION"), errors="coerce"
+                    df_tmp["PROBABILIDAD_CANCELACION"] = df_tmp.get("PROBABILIDAD_CANCELACION").apply(
+                        lambda x: _to_prob01_safe(x, default=np.nan)
                     )
                     df_tmp = df_tmp.dropna(subset=["PROBABILIDAD_CANCELACION"])
 
@@ -2838,8 +2868,8 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                     df_tmp["LLEGADA"] = pd.to_datetime(df_tmp.get("LLEGADA"), errors="coerce")
                     revenue = pd.to_numeric(df_tmp.get("VALOR_RESERVA"), errors="coerce").fillna(0).sum()
                     pax = pd.to_numeric(df_tmp.get("PAX"), errors="coerce").fillna(0).sum()
-                    avg_prob = pd.to_numeric(df_tmp.get("PROBABILIDAD_CANCELACION"), errors="coerce").mean()
-                    high_risk = pd.to_numeric(df_tmp.get("PROBABILIDAD_CANCELACION"), errors="coerce").ge(0.6).sum()
+                    avg_prob = df_tmp.get("PROBABILIDAD_CANCELACION").apply(lambda x: _to_prob01_safe(x, default=np.nan)).mean()
+                    high_risk = df_tmp.get("PROBABILIDAD_CANCELACION").apply(lambda x: _to_prob01_safe(x, default=np.nan)).ge(0.6).sum()
 
                     info = (
                         "📈 **Resumen General 2026**\n\n"
@@ -2969,8 +2999,8 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                             pass
 
                     if "PROBABILIDAD_CANCELACION" in df_tmp.columns:
-                        df_tmp["PROBABILIDAD_CANCELACION"] = pd.to_numeric(
-                            df_tmp["PROBABILIDAD_CANCELACION"], errors="coerce"
+                        df_tmp["PROBABILIDAD_CANCELACION"] = df_tmp["PROBABILIDAD_CANCELACION"].apply(
+                            lambda x: _to_prob01_safe(x, default=np.nan)
                         )
                         if riesgo_min is not None:
                             df_tmp = df_tmp[df_tmp["PROBABILIDAD_CANCELACION"] >= riesgo_min]
@@ -2978,7 +3008,9 @@ def ejecutar_acciones_intranet(accion_container, acciones):
                             df_tmp = df_tmp[df_tmp["PROBABILIDAD_CANCELACION"] <= riesgo_max]
 
                     if "VALOR_RESERVA" in df_tmp.columns:
-                        df_tmp["VALOR_RESERVA"] = pd.to_numeric(df_tmp["VALOR_RESERVA"], errors="coerce")
+                        df_tmp["VALOR_RESERVA"] = df_tmp["VALOR_RESERVA"].apply(
+                            lambda x: _to_float_safe(x, default=np.nan)
+                        )
                         if valor_min is not None:
                             df_tmp = df_tmp[df_tmp["VALOR_RESERVA"] >= valor_min]
                         if valor_max is not None:
