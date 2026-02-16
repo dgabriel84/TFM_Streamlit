@@ -31,10 +31,8 @@ import numpy as np
 import random
 from google_sheets_store import (
     SHEET_RESERVAS_WEB,
-    read_sheet_df,
     sheets_enabled,
     upsert_sheet_row,
-    write_sheet_df,
 )
 
 # -----------------------------------------------------------------------------
@@ -1071,25 +1069,8 @@ def _normalizar_reservas_web_csv() -> pd.DataFrame:
             v = v / 100.0
         return max(0.0, min(1.0, v))
 
-    # Si Google Sheets está habilitado, usamos la hoja como fuente principal de reservas web.
-    if sheets_enabled():
-        try:
-            df_sheet = read_sheet_df(SHEET_RESERVAS_WEB, headers=COLUMNAS_WEB_FIJAS)
-            if df_sheet.empty:
-                # Primera carga: sembrar la hoja con lo que exista en local.
-                if not df_web.empty:
-                    write_sheet_df(SHEET_RESERVAS_WEB, df_web, headers=COLUMNAS_WEB_FIJAS)
-            else:
-                df_sheet["ID_RESERVA"] = (
-                    df_sheet["ID_RESERVA"]
-                    .astype(str)
-                    .str.strip()
-                    .str.replace(r"\.0$", "", regex=True)
-                )
-                df_web = df_sheet.drop_duplicates(subset=["ID_RESERVA"], keep="last")
-        except Exception:
-            # Fallback silencioso a local para no romper flujo de reservas.
-            pass
+    # En producción de demo usamos CSV local como fuente de lectura para evitar
+    # latencia/memoria extra; Google Sheets queda como espejo de escrituras.
 
     # Saneo final: deja el CSV en tipos compatibles.
     if not df_web.empty:
