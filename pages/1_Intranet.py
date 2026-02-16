@@ -74,6 +74,7 @@ DEFAULT_TELEGRAM_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "8003818677:AAGNo4CYMHqm1hGTE3Ytmbz4csdZHwhXcIQ"
 )
+INTRANET_BUILD = os.environ.get("INTRANET_BUILD", "codex/sheets-persistence occ-cache-default-cm")
 
 # -----------------------------------------------------------------------------
 # TELEGRAM
@@ -1141,7 +1142,7 @@ def _safe_mtime(path):
         return 0.0
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
     """
     Carga o Genera el DATASET MAESTRO DE RESERVAS 2026.
@@ -1300,14 +1301,41 @@ def enriquecer_nombres_hoteles(df):
     
     return df
 
+@st.cache_data(show_spinner=False)
+def get_occupation_metrics_cached(_maestro_mtime=0.0, _web_mtime=0.0):
+    """
+    Calcula ocupación diaria usando cache por mtime de ficheros (evita hashear DF grande).
+    """
+    base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
+    path_web = os.path.join(base_dir_app, "reservas_web_2026.csv")
+
+    df_maestro = cargar_dataset_maestro(
+        _maestro_mtime=_maestro_mtime or _safe_mtime(path_maestro),
+        _web_mtime=_web_mtime or _safe_mtime(path_web),
+    )
+    if df_maestro is None or df_maestro.empty:
+        return pd.DataFrame()
+
+    dates = pd.date_range("2026-01-01", "2026-12-31")
+    return calcular_ocupacion_vectorizada(df_maestro, dates)
+
+
 def get_occupation_metrics(df_maestro):
     """
-    Calcula ocupación diaria agregando el dataset maestro.
+    Wrapper de compatibilidad para llamadas existentes.
     """
-    # Rango 2026
-    dates = pd.date_range("2026-01-01", "2026-12-31")
-
-    return calcular_ocupacion_vectorizada(df_maestro, dates)
+    try:
+        base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
+        path_web = os.path.join(base_dir_app, "reservas_web_2026.csv")
+        return get_occupation_metrics_cached(
+            _maestro_mtime=_safe_mtime(path_maestro),
+            _web_mtime=_safe_mtime(path_web),
+        )
+    except Exception:
+        dates = pd.date_range("2026-01-01", "2026-12-31")
+        return calcular_ocupacion_vectorizada(df_maestro, dates)
 
 
 def _norm_text_occ(value):
@@ -1395,7 +1423,6 @@ def _normalizar_hotel_ocupacion(hotel):
     return ""
 
 
-@st.cache_data(show_spinner=False)
 def calcular_ocupacion_vectorizada(df, _dates):
     # Lógica optimizada para gráfico (solo hoteles canónicos de intranet)
     if df is None or df.empty:
@@ -1449,36 +1476,51 @@ def calcular_ocupacion_vectorizada(df, _dates):
         return pd.DataFrame()
 
     records = []
-
     hoteles = sorted(df_work["HOTEL_CANON"].unique())
-    dias_int = _dates.values.astype("int64")
+    n_days = len(_dates)
+    base_day = _dates[0].normalize()
+
+    # Índices de día para cálculo lineal O(N) por hotel
+    df_work["ARR_IDX"] = (df_work["LLEGADA"].dt.normalize() - base_day).dt.days.astype("int64")
+    df_work["DEP_IDX"] = (df_work["SALIDA"].dt.normalize() - base_day).dt.days.astype("int64")
+    overlap = (df_work["DEP_IDX"] > 0) & (df_work["ARR_IDX"] < n_days)
+    df_work = df_work[overlap].copy()
+    if df_work.empty:
+        return pd.DataFrame()
 
     for hotel in hoteles:
-        df_h = df_work[df_work["HOTEL_CANON"] == hotel]
         hotel_info = HOTELES_OCUPACION_INFO.get(hotel)
         if not hotel_info:
             continue
-        cap = hotel_info["capacidad"]
-        complejo = hotel_info["complejo"]
+        df_h = df_work[df_work["HOTEL_CANON"] == hotel]
+        if df_h.empty:
+            continue
 
-        llegadas = df_h['LLEGADA'].values.astype('int64')
-        salidas = df_h['SALIDA'].values.astype('int64')
+        arr = np.clip(df_h["ARR_IDX"].to_numpy(dtype=np.int64), 0, n_days - 1)
+        dep = np.clip(df_h["DEP_IDX"].to_numpy(dtype=np.int64), 0, n_days)
 
-        for i, d in enumerate(dias_int):
-            occ = np.sum((llegadas <= d) & (salidas > d))
-            records.append({
-                "Fecha": _dates[i],
-                "Complejo": complejo,
-                "Hotel": hotel,
-                "Capacidad": cap,
-                "Ocupadas_Brutas": occ,
-                "Pct_Cancelacion_Predicha": 15.0
-            })
+        diff = np.zeros(n_days + 1, dtype=np.int32)
+        np.add.at(diff, arr, 1)
+        np.add.at(diff, dep, -1)
+        occ = np.cumsum(diff[:-1]).astype(np.int32)
+
+        records.append(
+            pd.DataFrame(
+                {
+                    "Fecha": _dates,
+                    "Complejo": hotel_info["complejo"],
+                    "Hotel": hotel,
+                    "Capacidad": hotel_info["capacidad"],
+                    "Ocupadas_Brutas": occ,
+                    "Pct_Cancelacion_Predicha": 15.0,
+                }
+            )
+        )
 
     if not records:
         return pd.DataFrame()
 
-    res = pd.DataFrame(records)
+    res = pd.concat(records, ignore_index=True)
 
     # Agregar Totales
     totales = res.groupby(['Fecha', 'Complejo']).sum(numeric_only=True).reset_index()
@@ -1554,6 +1596,7 @@ def main():
         <h2>Intranet - Palladium Intelligence</h2>
     </div>
     """, unsafe_allow_html=True)
+    st.caption(f"Build: {INTRANET_BUILD}")
     
     # -------------------------------------------------------------------------
     # CARGAR MODELO
@@ -1608,8 +1651,11 @@ def main():
     # =========================================================================
     if selected_tab == "CONTROL DE OCUPACIÓN":
         st.subheader("Análisis de Ocupación y Overbooking Seguro")
-        # Reutiliza el maestro ya cargado (evita cargar dos veces 350k filas).
-        df_ocupacion = get_occupation_metrics(df_maestro)
+        # Cálculo cacheado por mtime (rápido entre reruns y sesiones).
+        df_ocupacion = get_occupation_metrics_cached(
+            _maestro_mtime=_safe_mtime(path_maestro),
+            _web_mtime=_safe_mtime(path_web),
+        )
         
         if df_ocupacion.empty:
             st.warning("No hay datos de ocupación disponibles.")
@@ -1619,7 +1665,18 @@ def main():
                 c for c in df_ocupacion['Complejo'].dropna().astype(str).unique()
                 if c.strip() and c.strip().lower() != "desconocido"
             )
-            sel_complejo = st.selectbox("Seleccionar Complejo", complejos)
+            complejo_default = "Complejo Costa Mujeres" if "Complejo Costa Mujeres" in complejos else (complejos[0] if complejos else "")
+            if "occ_sel_complejo" not in st.session_state:
+                st.session_state["occ_sel_complejo"] = complejo_default
+            if st.session_state["occ_sel_complejo"] not in complejos:
+                st.session_state["occ_sel_complejo"] = complejo_default
+
+            sel_complejo = st.selectbox(
+                "Seleccionar Complejo",
+                complejos,
+                index=complejos.index(st.session_state["occ_sel_complejo"]) if complejos else 0,
+                key="occ_sel_complejo",
+            )
             
             df_filt1 = df_ocupacion[df_ocupacion['Complejo'] == sel_complejo]
             
@@ -1628,7 +1685,20 @@ def main():
                 df_filt1['Hotel'].dropna().astype(str).unique(),
                 key=lambda x: (1 if x.startswith("TOTAL ") else 0, x)
             )
-            sel_hotel = st.selectbox("Seleccionar Hotel", hoteles)
+            hotel_default = f"TOTAL {sel_complejo.upper()}"
+            if hotel_default not in hoteles and hoteles:
+                hotel_default = hoteles[0]
+            if "occ_sel_hotel" not in st.session_state:
+                st.session_state["occ_sel_hotel"] = hotel_default
+            if st.session_state["occ_sel_hotel"] not in hoteles:
+                st.session_state["occ_sel_hotel"] = hotel_default
+
+            sel_hotel = st.selectbox(
+                "Seleccionar Hotel",
+                hoteles,
+                index=hoteles.index(st.session_state["occ_sel_hotel"]) if hoteles else 0,
+                key="occ_sel_hotel",
+            )
             
             df_final_viz = df_filt1[df_filt1['Hotel'] == sel_hotel].copy()
             
