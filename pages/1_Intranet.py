@@ -27,10 +27,8 @@ import csv
 from google_sheets_store import (
     SHEET_RESERVAS_WEB,
     SHEET_RESERVAS_HIST,
-    read_sheet_df,
     sheets_enabled,
     update_sheet_fields_by_id,
-    write_sheet_df,
 )
 
 # -----------------------------------------------------------------------------
@@ -718,18 +716,8 @@ def _normalizar_reservas_web_intranet(csv_path):
     if not df.empty and "ID_RESERVA" in df.columns:
         df = df.drop_duplicates(subset=["ID_RESERVA"], keep="last")
 
-    # Si Google Sheets está activo, la hoja de reservas web pasa a ser la fuente principal.
-    if sheets_enabled():
-        try:
-            df_sheet = read_sheet_df(SHEET_RESERVAS_WEB, headers=WEB_COLS_ACTUAL)
-            if df_sheet.empty:
-                if not df.empty:
-                    write_sheet_df(SHEET_RESERVAS_WEB, df, headers=WEB_COLS_ACTUAL)
-            else:
-                df_sheet["ID_RESERVA"] = df_sheet["ID_RESERVA"].apply(_normalizar_id_reserva)
-                df = df_sheet.drop_duplicates(subset=["ID_RESERVA"], keep="last")
-        except Exception:
-            pass
+    # CSV local como fuente de lectura para minimizar latencia/uso de memoria.
+    # Google Sheets se mantiene solo para escrituras (alta reserva / envío oferta).
 
     if os.path.exists(csv_path) or not df.empty:
         if "PROBABILIDAD_CANCELACION" in df.columns:
@@ -1172,14 +1160,6 @@ def cargar_dataset_maestro(_maestro_mtime=0.0, _web_mtime=0.0):
         # Optimización: Cargar solo columnas necesarias si es muy pesado para visualización
         # Pero para gestión necesitamos detalle. Leemos con tipos optimizados.
         df = pd.read_csv(path_maestro)
-        if sheets_enabled():
-            try:
-                df_hist_sheet = read_sheet_df(SHEET_RESERVAS_HIST, headers=None)
-                if df_hist_sheet.empty:
-                    # Semilla inicial del dataset sintético en la hoja histórica.
-                    write_sheet_df(SHEET_RESERVAS_HIST, df, headers=list(df.columns))
-            except Exception:
-                pass
         df['LLEGADA'] = pd.to_datetime(df['LLEGADA'])
         df['SALIDA'] = pd.to_datetime(df['SALIDA'])
         
@@ -1511,24 +1491,6 @@ def calcular_ocupacion_vectorizada(df, _dates):
     return res
 
 
-@st.cache_data(show_spinner=False)
-def cargar_base_ocupacion_local(_maestro_mtime=0.0):
-    """
-    Fuente preferente para Control de Ocupación:
-    dataset sintético local completo (no hoja remota).
-    """
-    base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
-    if not os.path.exists(path_maestro):
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(path_maestro, low_memory=False)
-        if "NOMBRE_HOTEL_REAL" not in df.columns and "HOTEL_COMPLEJO" in df.columns:
-            df = enriquecer_nombres_hoteles(df)
-        return df
-    except Exception:
-        return pd.DataFrame()
-
 def main():
     """
     Función principal que renderiza el panel de intranet.
@@ -1646,16 +1608,8 @@ def main():
     # =========================================================================
     if selected_tab == "CONTROL DE OCUPACIÓN":
         st.subheader("Análisis de Ocupación y Overbooking Seguro")
-
-        # Fuente prioritaria: dataset sintético local (evita sesgo por sincronizaciones parciales en Sheets).
-        base_dir_app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        path_maestro = os.path.join(base_dir_app, "reservas_2026_full.csv")
-        df_ocup_src = cargar_base_ocupacion_local(_safe_mtime(path_maestro))
-        if df_ocup_src.empty:
-            df_ocup_src = df_maestro
-
-        # Cargar datos de ocupación desde la fuente elegida.
-        df_ocupacion = get_occupation_metrics(df_ocup_src)
+        # Reutiliza el maestro ya cargado (evita cargar dos veces 350k filas).
+        df_ocupacion = get_occupation_metrics(df_maestro)
         
         if df_ocupacion.empty:
             st.warning("No hay datos de ocupación disponibles.")
