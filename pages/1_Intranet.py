@@ -74,7 +74,7 @@ DEFAULT_TELEGRAM_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "8003818677:AAGNo4CYMHqm1hGTE3Ytmbz4csdZHwhXcIQ"
 )
-INTRANET_BUILD = os.environ.get("INTRANET_BUILD", "codex/sheets-persistence occ-cache-default-cm")
+INTRANET_BUILD = os.environ.get("INTRANET_BUILD", "Build Estable")
 
 # -----------------------------------------------------------------------------
 # TELEGRAM
@@ -1596,7 +1596,7 @@ def main():
         <h2>Intranet - Palladium Intelligence</h2>
     </div>
     """, unsafe_allow_html=True)
-    st.caption(f"Build: {INTRANET_BUILD}")
+    st.caption(INTRANET_BUILD)
     
     # -------------------------------------------------------------------------
     # CARGAR MODELO
