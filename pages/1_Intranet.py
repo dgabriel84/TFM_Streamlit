@@ -1624,27 +1624,62 @@ def main():
         "CONTROL DE OCUPACIÓN",
         "SOBRE NOSOTROS",
     ]
+    nav_state_key = "intranet_tab_state"
+    default_tab = st.session_state.get(nav_state_key, tabs[0])
+    if default_tab not in tabs:
+        default_tab = tabs[0]
+
     selected_tab = None
     if hasattr(st, "segmented_control"):
         try:
             selected_tab = st.segmented_control(
                 "Navegación intranet",
                 tabs,
-                default=tabs[0],
-                key="intranet_tab",
+                default=default_tab,
+                key="intranet_tab_seg",
                 label_visibility="collapsed",
             )
         except TypeError:
-            selected_tab = st.segmented_control(
+            # Compatibilidad con versiones antiguas de Streamlit
+            try:
+                if (
+                    "intranet_tab_seg" not in st.session_state
+                    or st.session_state["intranet_tab_seg"] not in tabs
+                ):
+                    st.session_state["intranet_tab_seg"] = default_tab
+                selected_tab = st.segmented_control(
+                    "Navegación intranet",
+                    tabs,
+                    key="intranet_tab_seg",
+                )
+            except Exception:
+                selected_tab = None
+        except Exception:
+            selected_tab = None
+
+    if selected_tab is None:
+        idx_default = tabs.index(default_tab)
+        try:
+            selected_tab = st.radio(
                 "Navegación intranet",
                 tabs,
+                horizontal=True,
+                index=idx_default,
+                key="intranet_tab_radio",
                 label_visibility="collapsed",
             )
-    if not selected_tab:
-        try:
-            selected_tab = st.radio("Navegación intranet", tabs, horizontal=True, key="intranet_tab", label_visibility="collapsed")
         except TypeError:
-            selected_tab = st.radio("Navegación intranet", tabs, horizontal=True, key="intranet_tab")
+            selected_tab = st.radio(
+                "Navegación intranet",
+                tabs,
+                horizontal=True,
+                index=idx_default,
+                key="intranet_tab_radio",
+            )
+
+    if selected_tab not in tabs:
+        selected_tab = default_tab
+    st.session_state[nav_state_key] = selected_tab
 
     # =========================================================================
     # TAB 4: CONTROL DE OCUPACIÓN (OVERBOOKING)
