@@ -2028,10 +2028,9 @@ print(f"Probabilidad de cancelación: {{resultado:.2%}}")"""
             | Métrica | Valor |
             |---------|-------|
             | **AUC-ROC** | 0.80 |
-            | **Accuracy** | 78.98% |
-            | **Precision** | 68.12% |
-            | **Recall** | 81.85% |
-            | **F1-Score** | 74.35% |
+            | **Accuracy** | 77.40% |
+            | **Precision** | 66.20% |
+            | **Recall** | 80.10% |
             """)
 
         st.markdown("""
